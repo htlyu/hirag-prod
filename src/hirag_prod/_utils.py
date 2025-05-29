@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
-from typing import Any
+from typing import Any, Coroutine, Iterable, List, TypeVar
 
 import numpy as np
 import tiktoken
@@ -322,3 +322,18 @@ async def _handle_single_relationship_extraction(
         description=edge_description,
         source_id=chunk_key,
     )
+
+T = TypeVar("T")
+
+
+async def _limited_gather(
+    coros: Iterable[Coroutine[Any, Any, T]], limit: int
+) -> List[T]:
+    sem = asyncio.Semaphore(limit)
+
+    async def _worker(c):
+        async with sem:
+            return await c
+
+    tasks = [asyncio.create_task(_worker(c)) for c in coros]
+    return await asyncio.gather(*tasks)

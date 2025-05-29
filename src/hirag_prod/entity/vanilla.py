@@ -8,6 +8,7 @@ from typing import Callable, Dict, List
 from hirag_prod._utils import (
     _handle_single_entity_extraction,
     _handle_single_relationship_extraction,
+    _limited_gather,
     compute_mdhash_id,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
@@ -200,11 +201,16 @@ class VanillaEntity(BaseEntity):
             )
             return entity
 
+        entity_extraction_concurrency: int = 4
+        entity_merge_concurrency: int = 2
+
+        extraction_coros = [_process_single_content_entity(chunk) for chunk in chunks]
+
         # entities_list is a list of list of entities
         # because _process_single_content_entity returns a list of entities
         # TODO: handle the concurrent entity extraction
-        entities_list = await asyncio.gather(
-            *[_process_single_content_entity(chunk) for chunk in chunks]
+        entities_list = await _limited_gather(
+            extraction_coros, entity_extraction_concurrency
         )
         # Flatten the list of entity lists into a single list of entities
         entities = [entity for entity_list in entities_list for entity in entity_list]
@@ -222,12 +228,11 @@ class VanillaEntity(BaseEntity):
         entities_to_merge_by_name = defaultdict(list)
         for entity in entities_to_merge:
             entities_to_merge_by_name[entity.page_content].append(entity)
-        merged_entities = await asyncio.gather(
-            *[
-                _merge_entities(entity_name, entities)
-                for entity_name, entities in entities_to_merge_by_name.items()
-            ]
-        )
+        merge_coros = [
+            _merge_entities(name, ents)
+            for name, ents in entities_to_merge_by_name.items()
+        ]
+        merged_entities = await _limited_gather(merge_coros, entity_merge_concurrency)
         return entities_unique + merged_entities
 
     async def relation(
@@ -330,19 +335,24 @@ class VanillaEntity(BaseEntity):
                     relations.append(relation)
             return relations
 
-        relations_list = await asyncio.gather(
-            *[
-                _process_single_content_relation(
-                    chunk,
-                    {
-                        e.page_content: e
-                        for e in entities
-                        if chunk.id in e.metadata.chunk_ids
-                    },
-                )
-                for chunk in chunks
-            ]
+        relation_extraction_concurrency: int = 5
+
+        relation_coros = [
+            _process_single_content_relation(
+                chunk,
+                {
+                    e.page_content: e
+                    for e in entities
+                    if chunk.id in e.metadata.chunk_ids
+                },
+            )
+            for chunk in chunks
+        ]
+
+        relations_list = await _limited_gather(
+            relation_coros, relation_extraction_concurrency
         )
+
         relations = [
             relation for relation_list in relations_list for relation in relation_list
         ]

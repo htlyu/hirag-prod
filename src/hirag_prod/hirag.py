@@ -1,4 +1,9 @@
+import asyncio
 import logging
+import multiprocessing
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -15,6 +20,17 @@ from hirag_prod.storage import (
     RetrievalStrategyProvider,
 )
 
+from hirag_prod._utils import _limited_gather  # Concurrency Rate Limiting Tool
+
+
+# Log Configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logging.getLogger("HiRAG").setLevel(logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("HiRAG")
 
 
@@ -42,6 +58,12 @@ class HiRAG:
     async def initialize_tables(self):
         self.chunks_table = await self.vdb.db.open_table("chunks")
         self.entities_table = await self.vdb.db.open_table("entities")
+    
+    # Parallel Pool & Concurrency Rate Limiting Parameters
+    _chunk_pool: ProcessPoolExecutor | None = None
+    chunk_upsert_concurrency: int = 4
+    entity_upsert_concurrency: int = 4
+    relation_upsert_concurrency: int = 2
 
     @classmethod
     async def create(cls, **kwargs):
@@ -56,6 +78,63 @@ class HiRAG:
         await instance.initialize_tables()
         return instance
 
+
+
+    @classmethod
+    def _get_pool(cls) -> ProcessPoolExecutor:
+        if cls._chunk_pool is None:
+            ctx = multiprocessing.get_context("spawn")
+            cpu = os.cpu_count() or 1
+            cls._chunk_pool = ProcessPoolExecutor(max_workers=cpu, mp_context=ctx)
+        return cls._chunk_pool
+
+    async def _process_document(self, document):
+        """
+        Single-document processing: chunk  upsert chunks  extract entities & upsert  extract relations & upsert
+        """
+        loop = asyncio.get_running_loop()
+        pool = self._get_pool()
+        # Chunking executed in process pool
+        chunks = await loop.run_in_executor(pool, self.chunker.chunk, document)
+
+        # Concurrently upsert chunks
+        chunk_coros = [
+            self.vdb.upsert_text(
+                text_to_embed=chunk.page_content,
+                properties={
+                    "document_key": chunk.id,
+                    "text": chunk.page_content,
+                    **chunk.metadata.__dict__,
+                },
+                table_name="chunks",
+                mode="overwrite",
+            )
+            for chunk in chunks
+        ]
+        await _limited_gather(chunk_coros, self.chunk_upsert_concurrency)
+
+        # Entity extraction & upsert
+        entities = await self.entity_extractor.entity(chunks)
+        entity_coros = [
+            self.vdb.upsert_text(
+                text_to_embed=ent.metadata.description,
+                properties={
+                    "document_key": ent.id,
+                    "text": ent.page_content,
+                    **ent.metadata.__dict__,
+                },
+                table_name="entities",
+                mode="overwrite",
+            )
+            for ent in entities
+        ]
+        await _limited_gather(entity_coros, self.entity_upsert_concurrency)
+
+        # Relation extraction & upsert
+        relations = await self.entity_extractor.relation(chunks, entities)
+        relation_coros = [self.gdb.upsert_relation(rel) for rel in relations]
+        await _limited_gather(relation_coros, self.relation_upsert_concurrency)
+
     async def insert_to_kb(
         self,
         document_path: str,
@@ -65,7 +144,10 @@ class HiRAG:
     ):
         # Load the document from the document path
         logger.info(f"Loading the document from the document path: {document_path}")
-        documents = load_document(
+        
+        start_total = time.perf_counter()
+        documents = await asyncio.to_thread(
+            load_document,
             document_path,
             content_type,
             document_meta,
@@ -74,43 +156,16 @@ class HiRAG:
         )
         logger.info(f"Loaded {len(documents)} documents")
 
-        logger.info("Chunking the documents")
-        # TODO: Handle the concurrent upsertion
-        for document in documents:
-            chunks = self.chunker.chunk(document)
-            # TODO: Handle the concurrent upsertion
-            for chunk in chunks:
-                await self.vdb.upsert_text(
-                    text_to_embed=chunk.page_content,
-                    properties={
-                        "document_key": chunk.id,
-                        "text": chunk.page_content,
-                        **chunk.metadata.__dict__,
-                    },
-                    table_name="chunks",
-                    mode="overwrite",
-                )
-            entities = await self.entity_extractor.entity(chunks)
-            # Store to lancedb for now
-            for entity in entities:
-                await self.vdb.upsert_text(
-                    text_to_embed=entity.metadata.description,
-                    properties={
-                        "document_key": entity.id,
-                        "text": entity.page_content,
-                        **entity.metadata.__dict__,
-                    },
-                    table_name="entities",
-                    mode="overwrite",
-                )
 
-            # extract relations
-            relations = await self.entity_extractor.relation(chunks, entities)
-            # TODO: handle the concurrent upsertion
-            for relation in relations:
-                await self.gdb.upsert_relation(relation)
-            # dump the graph
-            await self.gdb.dump()
+        # Concurrently process all documents
+        tasks = [self._process_document(doc) for doc in documents]
+        await asyncio.gather(*tasks)
+
+        # dump the graph
+        await self.gdb.dump()
+
+        total = time.perf_counter() - start_total
+        logger.info(f"Total pipeline time: {total:.3f}s")
 
     async def query_chunks(self, query: str, topk: int = 10):
         return await self.vdb.query(
