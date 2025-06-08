@@ -81,6 +81,7 @@ class HiRAG:
                                 "document_id", pa.string()
                             ),  # The id of the document that the chunk is from
                             pa.field("vector", pa.list_(pa.float32(), 1536)),
+                            pa.field("uploaded_at", pa.timestamp("ms")),
                         ]
                     ),
                 )
@@ -115,13 +116,13 @@ class HiRAG:
         if kwargs.get("vdb") is None:
             lancedb = await LanceDB.create(
                 embedding_func=embedding_service.create_embeddings,
-                db_url="kb/hirag.db",
+                db_url="/kb/hirag.db",
                 strategy_provider=RetrievalStrategyProvider(),
             )
             kwargs["vdb"] = lancedb
         if kwargs.get("gdb") is None:
             gdb = NetworkXGDB.create(
-                path="kb/hirag.gpickle",
+                path="/kb/hirag.gpickle",
                 llm_func=chat_service.complete,
             )
             kwargs["gdb"] = gdb
@@ -164,7 +165,7 @@ class HiRAG:
                     **chunk.metadata.__dict__,
                 },
                 table_name="chunks",
-                mode="overwrite",
+                mode="append",
             )
             for chunk in chunks
         ]
@@ -182,7 +183,7 @@ class HiRAG:
                         **ent.metadata.__dict__,
                     },
                     table_name="entities",
-                    mode="overwrite",
+                    mode="append",
                 )
                 for ent in entities
             ]
@@ -203,6 +204,22 @@ class HiRAG:
     ):
         # Load the document from the document path
         logger.info(f"Loading the document from the document path: {document_path}")
+        # Check if document has already been chunked
+        uri = document_meta.get("uri") if document_meta else None
+        if uri:
+            try:
+                # Try to query existing chunks for this document
+                existing_chunks = (
+                    await self.chunks_table.query().where(f"uri == '{uri}'").to_list()
+                )
+                if existing_chunks:
+                    logger.info(
+                        f"Document {document_key} already exists in the knowledge base"
+                    )
+                    return
+            except Exception as e:
+                logger.warning(f"Error checking for existing chunks: {e}")
+                # Continue with processing if check fails
 
         start_total = time.perf_counter()
         documents = await asyncio.to_thread(
@@ -225,30 +242,42 @@ class HiRAG:
         total = time.perf_counter() - start_total
         logger.info(f"Total pipeline time: {total:.3f}s")
 
-    async def query_chunks(self, query: str, topk: int = 10) -> list[dict[str, Any]]:
+    async def query_chunks(
+        self, query: str, topk: int = 10, topn: int = 5
+    ) -> list[dict[str, Any]]:
         chunks = await self.vdb.query(
             query=query,
             table=self.chunks_table,
-            topk=topk,
-            require_access="public",
-            columns_to_select=["text", "document_key", "filename", "private"],
+            topk=topk,  # before reranking
+            topn=topn,  # after reranking
+            columns_to_select=[
+                "text",
+                "uri",
+                "filename",
+                "private",
+                "uploaded_at",
+                "document_key",
+            ],
         )
         return chunks
 
-    async def query_entities(self, query: str, topk: int = 10) -> list[dict[str, Any]]:
+    async def query_entities(
+        self, query: str, topk: int = 10, topn: int = 5
+    ) -> list[dict[str, Any]]:
         entities = await self.vdb.query(
             query=query,
             table=self.entities_table,
-            topk=topk,
+            topk=topk,  # before reranking
+            topn=topn,  # after reranking
             columns_to_select=["text", "document_key", "entity_type", "description"],
         )
         return entities
 
     async def query_relations(
-        self, query: str, topk: int = 10
+        self, query: str, topk: int = 10, topn: int = 5
     ) -> tuple[list[str], list[str]]:
         # search the entities
-        recall_entities = await self.query_entities(query, topk)
+        recall_entities = await self.query_entities(query, topk, topn)
         recall_entities = [entity["document_key"] for entity in recall_entities]
         # search the relations
         recall_neighbors = []
@@ -259,13 +288,15 @@ class HiRAG:
             recall_edges.extend(edges)
         return recall_neighbors, recall_edges
 
-    async def query_all(self, query: str, topk: int = 10) -> dict[str, list[dict]]:
+    async def query_all(self, query: str) -> dict[str, list[dict]]:
         # search chunks
-        recall_chunks = await self.query_chunks(query, topk)
+        recall_chunks = await self.query_chunks(query, topk=10, topn=5)
         # search entities
-        recall_entities = await self.query_entities(query, topk)
+        recall_entities = await self.query_entities(query, topk=10, topn=5)
         # search relations
-        recall_neighbors, recall_edges = await self.query_relations(query, topk)
+        recall_neighbors, recall_edges = await self.query_relations(
+            query, topk=10, topn=5
+        )
         # merge the results
         # TODO: the recall results are not returned in the same format
         return {
