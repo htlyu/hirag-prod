@@ -5,7 +5,7 @@
 **Option 1: Docker Deployment**
 Run the following command to start the container, before that you should install docker and docker-compose.
 ```bash
-git clone https://github.com/sagicuhk/hirag-prod.git
+git clone https://github.com/Kasma-Inc/hirag-prod
 cd hirag-prod
 HIRAG_PROD_DIR="." docker-compose -p hirag-prod-compose up -d
 ```
