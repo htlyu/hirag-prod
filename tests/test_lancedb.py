@@ -146,3 +146,26 @@ async def test_lancedb_with_entity():
         "chunk_ids",
         "vector",
     }
+
+
+@pytest.mark.asyncio
+async def test_lancedb_upsert_texts():
+    strategy_provider = RetrievalStrategyProvider()
+    lance_db = await LanceDB.create(
+        embedding_func=EmbeddingService().create_embeddings,
+        db_url="kb/batch.db",
+        strategy_provider=strategy_provider,
+    )
+
+    texts = ["foo", "bar"]
+    props = [{"text": t, "document_key": f"id-{i}"} for i, t in enumerate(texts)]
+
+    table = await lance_db.upsert_texts(
+        texts_to_embed=texts,
+        properties_list=props,
+        table_name="batch",
+        mode="overwrite",
+    )
+
+    data = await table.to_arrow()
+    assert data.to_pandas()["text"].tolist() == texts

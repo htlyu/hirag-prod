@@ -159,21 +159,21 @@ class HiRAG:
         logger.info(f"Chunking time: {chunking_time:.3f}s")
 
         start_upsert_chunks = time.perf_counter()
-        # Concurrently upsert chunks
-        chunk_coros = [
-            self.vdb.upsert_text(
-                text_to_embed=chunk.page_content,
-                properties={
-                    "document_key": chunk.id,
-                    "text": chunk.page_content,
-                    **chunk.metadata.__dict__,
-                },
-                table_name="chunks",
-                mode="append",
-            )
+        chunk_texts = [chunk.page_content for chunk in chunks]
+        chunk_properties = [
+            {
+                "document_key": chunk.id,
+                "text": chunk.page_content,
+                **chunk.metadata.__dict__,
+            }
             for chunk in chunks
         ]
-        await _limited_gather(chunk_coros, self.chunk_upsert_concurrency)
+        await self.vdb.upsert_texts(
+            texts_to_embed=chunk_texts,
+            properties_list=chunk_properties,
+            table=self.chunks_table,
+            mode="append",
+        )
         upsert_chunks_time = time.perf_counter() - start_upsert_chunks
         logger.info(f"Upsert chunks time: {upsert_chunks_time:.3f}s")
 
@@ -185,20 +185,21 @@ class HiRAG:
             logger.info(f"Entity extraction time: {entity_extraction_time:.3f}s")
 
             start_upsert_entities = time.perf_counter()
-            entity_coros = [
-                self.vdb.upsert_text(
-                    text_to_embed=ent.metadata.description,
-                    properties={
-                        "document_key": ent.id,
-                        "text": ent.page_content,
-                        **ent.metadata.__dict__,
-                    },
-                    table_name="entities",
-                    mode="append",
-                )
+            ent_texts = [ent.metadata.description for ent in entities]
+            ent_properties = [
+                {
+                    "document_key": ent.id,
+                    "text": ent.page_content,
+                    **ent.metadata.__dict__,
+                }
                 for ent in entities
             ]
-            await _limited_gather(entity_coros, self.entity_upsert_concurrency)
+            await self.vdb.upsert_texts(
+                texts_to_embed=ent_texts,
+                properties_list=ent_properties,
+                table=self.entities_table,
+                mode="append",
+            )
             upsert_entities_time = time.perf_counter() - start_upsert_entities
             logger.info(f"Upsert entities time: {upsert_entities_time:.3f}s")
 
