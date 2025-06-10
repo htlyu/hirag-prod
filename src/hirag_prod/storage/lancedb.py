@@ -62,6 +62,45 @@ class LanceDB(BaseVDB):
             await table.add([properties], mode=mode)
             return table
 
+    async def upsert_texts(
+        self,
+        texts_to_embed: list[str],
+        properties_list: list[dict],
+        table: Optional[lancedb.AsyncTable] = None,
+        table_name: Optional[str] = None,
+        mode: Literal["append", "overwrite"] = "append",
+    ) -> lancedb.AsyncTable:
+        """Batch insert multiple texts with embeddings.
+
+        Args:
+            texts_to_embed: List of texts to embed.
+            properties_list: Corresponding metadata for each text.
+            table: Existing table instance. If ``None``, ``table_name`` must be provided.
+            table_name: Name of the table when ``table`` is ``None``.
+            mode: Append or overwrite mode for ``lance`` table add.
+
+        Returns:
+            The table where the data was inserted.
+        """
+        embeddings = await self.embedding_func(texts_to_embed)
+        for props, emb in zip(properties_list, embeddings):
+            props["vector"] = emb.tolist()
+
+        if table is None:
+            if table_name is None:
+                raise ValueError("table_name is required if table is None")
+            try:
+                return await self.db.create_table(table_name, data=properties_list)
+            except ValueError as e:
+                if "already exists" in str(e):
+                    table = await self.db.open_table(table_name)
+                    await table.add(properties_list, mode=mode)
+                    return table
+                raise e
+        else:
+            await table.add(properties_list, mode=mode)
+            return table
+
     def add_filter_by_uri(self, uri_list: Optional[List[str]], query):
         filter_expr = None
         if uri_list is not None and len(uri_list) > 0:
