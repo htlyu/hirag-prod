@@ -253,7 +253,7 @@ class HiRAG:
             content_type,
             document_meta,
             loader_configs,
-            loader_type="mineru",
+            loader_type="doc2x",
         )
         logger.info(f"Loaded {len(documents)} documents")
 
