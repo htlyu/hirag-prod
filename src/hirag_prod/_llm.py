@@ -145,8 +145,6 @@ class EmbeddingService:
                 texts = [texts]
 
             encoding = tiktoken.get_encoding("cl100k_base")
-            split_texts: List[str] = []
-            mapping: List[List[int]] = []
 
             # Ensure none of the inputs exceed the token limit
             for text in texts:

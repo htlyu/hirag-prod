@@ -247,13 +247,14 @@ class HiRAG:
                 # Continue with processing if check fails
 
         start_total = time.perf_counter()
+        loader_type = "doc2x" if content_type == "application/pdf" else "langchain"
         documents = await asyncio.to_thread(
             load_document,
             document_path,
             content_type,
             document_meta,
             loader_configs,
-            loader_type="doc2x",
+            loader_type=loader_type,
         )
         logger.info(f"Loaded {len(documents)} documents")
 
