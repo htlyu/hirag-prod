@@ -15,7 +15,7 @@ class FixTokenChunk(BaseChunk):
         self.encoding = tiktoken.get_encoding(encoding_name)
 
     def chunk(self, document: File) -> list[Chunk]:
-        text = document.page_conten
+        text = document.page_content
         metadata = document.metadata
         document_id = document.id
 
