@@ -151,9 +151,65 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
-PROMPTS[
-    "community_report"
-] = """
+PROMPTS["REFERENCE_PLACEHOLDER"] = "[|REFERENCE|]"
+PROMPTS["REFERENCE_FORMAT"] = "[Data: {document_key}]"
+
+PROMPTS["summary_all_cn"] = """
+你是一个 AI 助手，帮助人类分析员总结给定的数据流，识别并评估与特定实体及网络内关系相关的相关信息。
+
+# 目标
+根据给定的原始文本块列表、实体列表及其关系列表，撰写一份综合摘要。
+如果所提供的描述存在矛盾，请解决这些矛盾并提供一个连贯一致的摘要。
+确保以第三人称撰写，并包含实体名称以提供完整上下文。
+
+# 基础规则
+由数据支持的要点应按以下方式表明受到数据支持：
+"这是一句由数据支持的语句 {reference_placeholder}。"
+
+无论信息来自哪个数据源或被多少来源引用，都应以相同方式引用，在句末标点前指示 {reference_placeholder}。
+摘要中不要包含数据记录的键或 ID。
+不要包含未提供支持证据的信息。
+绝不在同一句中使用两个引用或一个接一个的引用。
+将报告总长度限制为 {max_report_length} 字。
+
+# 示例输入
+-----------
+Data:
+
+Chunks
+id,chunk
+1, 联合游行是一个重要事件，正在 Verdant Oasis Plaza 举行。
+2, 和谐集会正在 Verdant Oasis Plaza 组织联合游行。
+
+Entities
+id,entity,description
+5,VERDANT OASIS PLAZA,Verdant Oasis Plaza 是联合游行的地点
+6,HARMONY ASSEMBLY,和谐集会是一个在 Verdant Oasis Plaza 举行游行的组织
+
+# 示例输出
+联合游行是一个重要事件，正在 Verdant Oasis Plaza 举行 {reference_placeholder}
+和谐集会正在 Verdant Oasis Plaza 组织联合游行 {reference_placeholder}。
+和谐集会与联合游行之间的关系表明和谐集会负责组织此事件 {reference_placeholder}。
+Verdant Oasis Plaza 与联合游行之间的关系表明联合游行在此地点举行 {reference_placeholder}。  
+
+# 实际数据
+使用以下数据进行回答。
+Data:
+{data}
+
+# 基础规则
+由数据支持的要点应按以下方式表明受到数据支持：
+"这是一句由数据支持的语句 {reference_placeholder}。"
+
+无论信息来自哪个数据源或被多少来源引用，都应以相同方式引用，在句末句点前指示 {reference_placeholder}。
+摘要中不要包含数据记录的键或 ID。
+不要包含未提供支持证据的信息。
+绝不在同一句中使用两个引用或一个接一个的引用。
+将报告总长度限制为 {max_report_length} 字。
+
+输出："""
+
+PROMPTS["summary_all_en"] = """
 You are an AI assistant that helps a human analyst to summarize a given stream of data, identifying and assessing relevant information associated with certain entities, relationships within a network.
 
 # Goal
@@ -163,16 +219,68 @@ Make sure it is written in third person, and include the entity names so we have
 
 # Grounding Rules
 
+Points supported by data should indicate that they are supported by the data as follows:
+
+"This is an example sentence supported by data references {reference_placeholder}."
+
+No matter which data source the information comes from or how many sources referred to, it should be referenced in the same way, indicating {reference_placeholder} at the end of the sentence, before the period.
+
+Do not include the key or the id of the data record in the summary.
+
 Do not include information where the supporting evidence for it is not provided.
+
+Never use two references in the same sentence or one directly after another.
 
 Limit the total report length to {max_report_length} words.
 
+# Example Input
+-----------
+Data:
+
+Chunks
+id,chunk
+1,The Unity March is a significant event that is taking place at Verdant Oasis Plaza.
+2,The Harmony Assembly is organizing the Unity March at Verdant Oasis Plaza.
+
+Entities
+
+id,entity,description
+5,VERDANT OASIS PLAZA,Verdant Oasis Plaza is the location of the Unity March
+6,HARMONY ASSEMBLY,Harmony Assembly is an organization that is holding a march at Verdant Oasis Plaza
+
+Relationships
+id,source,target,description
+37,VERDANT OASIS PLAZA,UNITY MARCH,Verdant Oasis Plaza is the location of the Unity March
+38,VERDANT OASIS PLAZA,HARMONY ASSEMBLY,Harmony Assembly is holding a march at Verdant Oasis Plaza
+
+# Example Output
+The Unity March is a significant event that is taking place at Verdant Oasis Plaza {reference_placeholder}. 
+The Harmony Assembly is organizing the Unity March at Verdant Oasis Plaza {reference_placeholder}. 
+The relationship between the Harmony Assembly and the Unity March indicates that the Harmony Assembly is responsible for the organization of this event {reference_placeholder}.
+The relationship between the Verdant Oasis Plaza and the Unity March indicates that the Unity March is being held at this location {reference_placeholder}.
+
 # Real Data
 
-Use the following data for your answer. Do not make anything up in your answer.
+Use the following data for your answer.
 
 Data:
 {data}
+
+# Grounding Rules
+
+Points supported by data should indicate that they are supported by the data as follows:
+
+"This is an example sentence supported by data references {reference_placeholder}."
+
+No matter which data source the information comes from or how many sources referred to, it should be shown in the same way, indicating {reference_placeholder} at the end of the sentence, before the period.
+
+Do not include the key or the id of the data record in the summary.
+
+Do not include information where the supporting evidence for it is not provided.
+
+Never use two references in the same sentence or one directly after another.
+
+Limit the total report length to {max_report_length} words.
 
 Output:
 """

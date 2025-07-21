@@ -37,6 +37,13 @@ from hirag_prod.storage import (
     NetworkXGDB,
     RetrievalStrategyProvider,
 )
+from hirag_prod.prompt import PROMPTS
+from hirag_prod.parser import (
+    DictParser,
+    ReferenceParser,
+)
+# from hirag_prod.similarity import CosineSimilarity
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
 
 load_dotenv("/chatbot/.env", override=True)
 
@@ -68,6 +75,13 @@ DEFAULT_RELATION_UPSERT_CONCURRENCY = 32
 # Retry Configuration
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
+
+# Reference Configuration
+DEFAULT_SIMILARITY_THRESHOLD = 0.5  # Default threshold for similarity, only shows references with similarity above this value
+DEFAULT_SIMILARITY_MAX_DIFFERENCE = 0.15  # If found a most similar reference already, only accept other references with similarity having this difference or less
+DEFAULT_MAX_REFERENCES = 3  # Maximum number of references to return
+
+SUPPORTED_LANGUAGES = ["en", "cn"]  # Supported languages for generation
 
 # Vector and Schema Configuration
 try:
@@ -892,6 +906,73 @@ class QueryService:
             "relations": relations,
         }
 
+    async def query_chunk_embeddings(
+        self, chunk_ids: List[str]
+    ) -> Dict[str, Any]:
+        """Query chunk embeddings"""
+        if not chunk_ids:
+            return {}
+
+        res = {}
+        try:
+            # Query chunk embeddings by keys
+            chunk_data = await self.storage.vdb.query_by_keys(
+                key_value=chunk_ids,
+                key_column="document_key",
+                table=self.storage.chunks_table,
+                columns_to_select=["document_key", "vector"],
+            )
+
+            # chunk data is a list of dicts with 'vector' key
+            for chunk in chunk_data:
+                if "vector" in chunk and chunk["vector"] is not None:
+                    res[chunk["document_key"]] = chunk["vector"]
+                else:
+                    # Log missing vector data and raise exception
+                    logger.warning(
+                        f"Chunk {chunk['document_key']} has no vector data"
+                    )
+                    res[chunk["document_key"]] = None
+
+        except Exception as e:
+            logger.error(f"Failed to query chunk embeddings: {e}")
+            return {}
+        
+        return res
+
+    async def query_entity_embeddings(
+        self, entity_ids: List[str]
+    ) -> Dict[str, Any]:
+        """Query entity embeddings"""
+        if not entity_ids:
+            return {}
+
+        res = {}
+        try:
+            # Query entity embeddings by keys
+            entity_data = await self.storage.vdb.query_by_keys(
+                key_value=entity_ids,
+                key_column="document_key",
+                table=self.storage.entities_table,
+                columns_to_select=["document_key", "vector"],
+            )
+
+            # entity data is a list of dicts with 'vector' key
+            for entity in entity_data:
+                if "vector" in entity and entity["vector"] is not None:
+                    res[entity["document_key"]] = entity["vector"]
+                else:
+                    # Log missing vector data and raise exception
+                    logger.warning(
+                        f"Entity {entity['document_key']} has no vector data"
+                    )
+                    res[entity["document_key"]] = None
+
+        except Exception as e:
+            logger.error(f"Failed to query entity embeddings: {e}")
+            return {}
+
+        return res
 
 # ============================================================================
 # Main HiRAG class
@@ -913,6 +994,7 @@ class HiRAG:
     _processor: Optional[DocumentProcessor] = field(default=None, init=False)
     _query_service: Optional[QueryService] = field(default=None, init=False)
     _metrics: Optional[MetricsCollector] = field(default=None, init=False)
+    _language: str = field(default=SUPPORTED_LANGUAGES[0], init=False)
 
     # Services
     chat_service: Optional[ChatCompletion] = field(default=None, init=False)
@@ -927,6 +1009,13 @@ class HiRAG:
         instance = cls(config=config)
         await instance._initialize(**kwargs)
         return instance
+    
+    async def set_language(self, language: str) -> None:
+        """Set the language for the HiRAG instance"""
+        if language not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {language}")
+        self._language = language
+        logger.info(f"Language set to {self._language}")
 
     # TODO: Enable initializing all resources (embedding_service, chat_service, vdb, gdb, etc.)
     # outside of the HiRAG class for better management of resources
@@ -993,6 +1082,23 @@ class HiRAG:
     # Chat service methods
     # ========================================================================
 
+    # Helper function for similarity calcuation
+    async def calculate_similarity(self, sentence_embedding: List[float], references: Dict[str, List[float]]) -> List[Dict[str, float]]:
+        """Calculate similarity between sentence embedding and reference embeddings"""
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
+
+        similar_refs = []
+        for entity_key, embedding in references.items():
+            if embedding is not None:
+                similarity = sklearn_cosine_similarity(
+                    [sentence_embedding], [embedding]
+                )[0][0]
+                similar_refs.append({
+                    "document_key": entity_key,
+                    "similarity": similarity
+                })
+        return similar_refs
+
     async def chat_complete(self, prompt: str, **kwargs: Any) -> str:
         """Chat with the user"""
         if not self.chat_service:
@@ -1014,32 +1120,169 @@ class HiRAG:
         entities: List[Dict[str, Any]],
         relationships: List[Dict[str, Any]],
     ) -> str:
-        """Generate summary from chunks, entities, and relationships"""
+        """Generate summary from chunks, entities, and relations"""
+        DEBUG = False  # Set to True for debugging output
+
         if not self.chat_service:
             raise HiRAGException("HiRAG instance not properly initialized")
 
-        prompt = PROMPTS["community_report"]
-
-        parser = DictParser()
-
-        # Should use parser to better format the data
-        data = "Chunks:\n" + parser.parse_list_of_dicts(chunks, "table") + "\n\n"
-        data += "Entities:\n" + parser.parse_list_of_dicts(entities, "table") + "\n\n"
-        data += "Relationships:\n" + str(relationships) + "\n\n"
-
-        prompt = prompt.format(data=data, max_report_length="5000")
+        logger.info("🚀 Starting summary generation")
+        start_time = time.perf_counter()
 
         try:
-            summary = await self.chat_complete(
-                prompt=prompt,
-                max_tokens=self.config.llm_max_tokens,
-                timeout=self.config.llm_timeout,
-                model=self.config.llm_model_name,
+            prompt = PROMPTS["summary_all_" + self._language]
+
+            placeholder = PROMPTS["REFERENCE_PLACEHOLDER"]
+
+            parser = DictParser()
+                
+            # Should use parser to better format the data
+            data = "Chunks:\n" + parser.parse_list_of_dicts(chunks, "table") + "\n\n"
+            data += "Entities:\n" + parser.parse_list_of_dicts(entities, "table") + "\n\n"
+            # data += "Relations:\n" + str(relationships) + "\n\n"
+
+            prompt = prompt.format(data=data, max_report_length="5000", reference_placeholder=placeholder)
+
+            try:
+                summary = await self.chat_complete(
+                    prompt=prompt,
+                    max_tokens=self.config.llm_max_tokens,
+                    timeout=self.config.llm_timeout,
+                    model=self.config.llm_model_name,
+                )
+            except Exception as e:
+                logger.error(f"Summary generation failed: {e}")
+                raise HiRAGException("Summary generation failed") from e
+
+            if DEBUG:
+                print("\n\n\nGenerated Summary:\n", summary)
+
+            # Find all sentences that contain the placeholder
+            ref_parser = ReferenceParser()
+
+            ref_sentences = await ref_parser.parse_references(summary, placeholder)
+
+            if DEBUG:
+                print("\n\n\nReference Sentences:\n", "\n".join(ref_sentences))
+
+            # for each sentence, do a query and find the best matching document key to find the referenced chunk, entity, or relationship
+            result = []
+
+            chunk_keys = [c["document_key"] for c in chunks]
+            entity_keys = [e["document_key"] for e in entities]
+
+            # Generate embeddings for each reference sentence
+            if not ref_sentences:
+                logger.warning("No reference sentences found in summary")
+                return summary
+
+            sentence_embeddings = await self.embedding_service.create_embeddings(texts=ref_sentences)
+            chunk_embeddings = await self._query_service.query_chunk_embeddings(chunk_keys)
+            entity_embeddings = await self._query_service.query_entity_embeddings(entity_keys)
+
+            # relation_descriptions = [rel.properties["description"] for rel in relationships]
+            # relation_embeddings = await self.embedding_service.create_embeddings(texts=relation_descriptions)
+            # # make relation embeddings be a dict with key as "source:target" and value as the embedding
+            # relation_embeddings = {
+            #     f"rel({rel.source}:{rel.target})": embedding
+            #     for rel, embedding in zip(relationships, relation_embeddings)
+            # }
+
+            for sentence, sentence_embedding in zip(ref_sentences, sentence_embeddings):
+                found = False
+
+                # If the sentence is empty, continue
+                if not sentence.strip():
+                    result.append("")
+                    continue
+
+                similar_chunks = await self.calculate_similarity(sentence_embedding, chunk_embeddings)
+
+                if DEBUG:
+                    print("\n\n\nSimilar Chunks for Sentence:", sentence, "\n", similar_chunks)
+
+                similar_entities = await self.calculate_similarity(sentence_embedding, entity_embeddings)
+
+                if DEBUG:
+                    print("\n\n\nSimilar Entities for Sentence:", sentence, "\n", similar_entities)
+
+                # similar_relations = await self.calculate_similarity(sentence_embedding, relation_embeddings)
+
+                # if DEBUG:
+                #     print("\n\n\nSimilar Relations for Sentence:", sentence, "\n", similar_relations)
+
+                # Sort by similarity
+                # reference_list = similar_chunks + similar_entities + similar_relations
+                reference_list = similar_chunks + similar_entities
+                reference_list.sort(key=lambda x: x["similarity"], reverse=True)
+
+                # If no similar chunks found, append empty string
+                if not reference_list:
+                    result.append("")
+                    continue
+
+                reference_threshold = DEFAULT_SIMILARITY_THRESHOLD
+                max_similarity_difference = DEFAULT_SIMILARITY_MAX_DIFFERENCE
+
+                # If we have a most similar reference, only accept others with similarity having this difference or less
+                most_similar = reference_list[0]
+                if most_similar["similarity"] > reference_threshold:
+                    reference_threshold = max(
+                        most_similar["similarity"] - max_similarity_difference, reference_threshold
+                    )
+                
+                # Filter references based on similarity threshold
+                filtered_references = [
+                    ref for ref in reference_list if ref["similarity"] >= reference_threshold
+                ]
+
+                # Limit the number of references to DEFAULT_MAX_REFERENCES
+                filtered_references = filtered_references[:DEFAULT_MAX_REFERENCES]
+
+                # If no references found, append empty string
+                if not filtered_references:
+                    result.append("")
+                    continue
+                
+                # Separate the references by "," and sort by type as primary, similarity as secondary
+                filtered_references.sort(
+                    key=lambda x: (x["document_key"].split("_")[0], -x["similarity"])
+                )
+
+                # Append the document keys to the result
+                if DEBUG:
+                    print("\n\n\nFiltered References for Sentence:", sentence, "\n", filtered_references)
+
+                if len(filtered_references) == 1:
+                    result.append(filtered_references[0]["document_key"])
+                else:
+                    # Join the document keys with ", "
+                    result.append(
+                        ", ".join(ref["document_key"] for ref in filtered_references)
+                    )
+
+            format_prompt = PROMPTS["REFERENCE_FORMAT"]
+
+            # fill the summary by ref chunks
+            summary = await ref_parser.fill_placeholders(
+                text=summary,
+                references=result,
+                reference_placeholder=placeholder,
+                format_prompt=format_prompt,
             )
+
+            if DEBUG:
+                print("\n\n\nFormatted Summary:\n", summary)
+
+            total_time = time.perf_counter() - start_time
+            logger.info(f"✅ Summary generation completed in {total_time:.3f}s")
+
             return summary
+
         except Exception as e:
-            logger.error(f"Summary generation failed: {e}")
-            raise HiRAGException("Summary generation failed") from e
+            total_time = time.perf_counter() - start_time
+            logger.error(f"❌ Summary generation failed after {total_time:.3f}s: {e}")
+            raise
 
     # ========================================================================
     # Public interface methods

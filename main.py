@@ -13,6 +13,10 @@ load_dotenv("/chatbot/.env")
 
 async def index():
     index = await HiRAG.create()
+
+    await index.set_language("cn")  # Set language to Chinese
+
+    # TODO: the insertion prompt would also need to support Chinese
     document_path = f"benchmark/2wiki/2wiki_subcorpus.txt"
     content_type = "text/plain"
     document_meta = {
@@ -26,7 +30,16 @@ async def index():
         content_type=content_type,
         document_meta=document_meta,
     )
+
     ret = await index.query_all("When did Lothair Ii's mother die?", summary=True)
+
+    print("———————————————————— Chunks ————————————————————\n")
+    print(ret["chunks"])
+    print("\n\n———————————————————— Entities ————————————————————\n")
+    print(ret["entities"])
+    print("\n\n———————————————————— Relations ————————————————————\n")
+    print(ret["relations"])
+    print("\n\n———————————————————— Summary ————————————————————\n")
     print(ret["summary"])
 
 
