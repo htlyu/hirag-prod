@@ -43,13 +43,7 @@ class ReferenceParser:
 
         return parts
 
-    async def fill_placeholders(
-        self,
-        text: str,
-        references: list[str],
-        reference_placeholder: str,
-        format_prompt: str = "{document_key}",
-    ) -> str:
+    async def fill_placeholders(self, text: str, references: list[list[str]], reference_placeholder: str, format_prompt: str = "{document_key}") -> str:
         """
         Fill the placeholders in the text with the provided references.
 
@@ -63,10 +57,10 @@ class ReferenceParser:
         """
 
         for ref in references:
-            if ref != "":
-                text = text.replace(
-                    reference_placeholder, format_prompt.format(document_key=ref), 1
-                )
+            if ref != []:
+                formatted_refs = [format_prompt.format(document_key=r) for r in ref]
+                replace_text = "".join(formatted_refs)
+                text = text.replace(reference_placeholder, replace_text, 1)
             else:
                 text = text.replace(reference_placeholder, "", 1)
 

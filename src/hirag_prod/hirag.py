@@ -1265,7 +1265,7 @@ class HiRAG:
 
                 # If no references found, append empty string
                 if not filtered_references:
-                    result.append("")
+                    result.append([])
                     continue
 
                 # Separate the references by "," and sort by type as primary, similarity as secondary
@@ -1283,11 +1283,11 @@ class HiRAG:
                     )
 
                 if len(filtered_references) == 1:
-                    result.append(filtered_references[0]["document_key"])
+                    result.append([filtered_references[0]["document_key"]])
                 else:
                     # Join the document keys with ", "
                     result.append(
-                        ", ".join(ref["document_key"] for ref in filtered_references)
+                        [ref["document_key"] for ref in filtered_references]
                     )
 
             format_prompt = PROMPTS["REFERENCE_FORMAT"]
