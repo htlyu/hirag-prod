@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set
 
 import redis
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from .storage.pg_utils import DatabaseClient
 
@@ -177,12 +178,17 @@ class ResumeTracker:
         - For lightweight progress updates, only touch updatedAt.
         """
         try:
-            db = DatabaseClient()
+            db_client = DatabaseClient()
+            engine = db_client.create_db_engine(db_client.connection_string)
+            session = AsyncSession(engine)
+
             normalized_status = status or ""
             # Normalize transient progress ticks to processing for PG persistence
             if normalized_status.lower() == "progress":
                 normalized_status = JobStatus.PROCESSING.value
-            db.update_job_status(job_id, normalized_status, updated_at=datetime.now())
+            db_client.update_job_status(
+                session, job_id, normalized_status, updated_at=datetime.now()
+            )
         except Exception:
             # Never let persistence issues break the pipeline
             pass
