@@ -1,10 +1,12 @@
+import json
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import pytest
 from docling_core.types.doc import DoclingDocument
 
-from hirag_prod.loader import load_document
+from hirag_prod._utils import upload_file_to_s3
+from hirag_prod.loader import check_dots_ocr_health, load_document
 from hirag_prod.schema import File
 
 # Document types supported by Docling loader (excluding txt)
@@ -183,8 +185,12 @@ class TestDoclingCloudLoader:
 
     def test_load_pdf_docling_cloud_s3(self):
         """Test loading PDF with Docling Cloud loader from S3"""
-        s3_path = "s3://monkeyocr/test/input/test_pdf/small.pdf"
-        filename = "small.pdf"
+        # s3_path = "s3://monkeyocr/test/input/test_pdf/small.pdf"
+        # filename = "small.pdf"
+        s3_path = "s3://monkeyocr/test/input/test_pdf/"
+        filename = "PGhandbook2025.pdf"
+
+        s3_path = f"{s3_path}{filename}"
 
         document_meta = self._create_document_meta(
             doc_type="pdf", filename=filename, uri=s3_path
@@ -202,3 +208,107 @@ class TestDoclingCloudLoader:
         assert doc_md.metadata.filename == filename
         assert doc_md.metadata.type == "pdf"
         assert doc_md.metadata.uri == s3_path
+
+        if not os.path.exists("./tmp"):
+            os.makedirs("./tmp")
+
+        # Save docling file & md
+        with open(f"./tmp/{filename}.json", "w") as f:
+            json.dump(docling_doc.model_dump(), f, ensure_ascii=False, indent=4)
+
+        with open(f"./tmp/{filename}.md", "w") as f:
+            f.write(doc_md.page_content)
+
+        assert os.path.exists(f"./tmp/{filename}.json")
+        assert os.path.exists(f"./tmp/{filename}.md")
+
+
+# ================================ Test Dots OCR Loader ================================
+class TestDotsOCRLoader:
+
+    def test_health_check(self):
+        """Test Dots OCR health check"""
+        assert check_dots_ocr_health()
+
+    def _create_document_meta(
+        self, doc_type: str, filename: str, uri: str
+    ) -> Dict[str, Any]:
+        """Create document metadata dictionary"""
+        return {
+            "type": doc_type,
+            "filename": filename,
+            "uri": uri,
+            "private": False,
+        }
+
+    def _assert_dots_ocr_document_loaded(self, doc: Any, doc_md: Any) -> None:
+        """Assert that Dots OCR document was loaded successfully"""
+        assert isinstance(doc, list)
+        assert isinstance(doc_md, File)
+        assert doc_md.page_content is not None
+        assert doc_md.metadata is not None
+        assert doc_md.id.startswith("doc-")
+
+    def load_document_info(
+        self, options: str, dir: Optional[str], file_name: Optional[str]
+    ) -> Tuple[str, str]:
+        if options == "s3":
+            return "s3://monkeyocr/test/input/test_pdf/small.pdf", "small.pdf"
+
+        if options == "local":
+            if not dir or not file_name:
+                return "", ""
+
+            local_path = os.path.join(dir, file_name)
+            # test if local exists
+            if not os.path.exists(local_path):
+                return "", ""
+
+            s3_path = f"test/input/test_pdf/{file_name}"
+            print(f"Uploading {local_path} to {s3_path}")
+            upload_file_to_s3(local_path, s3_path)
+            s3_path = f"s3://monkeyocr/test/input/test_pdf/{file_name}"
+            return s3_path, file_name
+
+    def test_load_pdf_dots_ocr_s3(self):
+        """Test loading PDF with Dots OCR loader from S3"""
+        s3_path, filename = self.load_document_info(
+            "local", "/chatbot/tests/test_files/", "PGhandbook2025.pdf"
+        )
+        if not s3_path:
+            print("Failed to load document from S3")
+            return
+
+        print(f"Loading document from: {s3_path}")
+
+        document_meta = self._create_document_meta(
+            doc_type="pdf", filename=filename, uri=s3_path
+        )
+
+        json_doc, md_doc = load_document(
+            document_path=s3_path,
+            content_type="application/pdf",
+            document_meta=document_meta,
+            loader_configs=None,
+            loader_type="dots_ocr",
+        )
+
+        self._assert_dots_ocr_document_loaded(json_doc, md_doc)
+
+        # save the json and md in the corresponding formats
+        import json
+
+        if not os.path.exists("./tmp"):
+            os.makedirs("./tmp")
+
+        json_path = f"./tmp/{filename}.json"
+        with open(json_path, "w") as json_file:
+            json.dump(json_doc, json_file, ensure_ascii=False, indent=4)
+
+        md_path = f"./tmp/{filename}.md"
+        with open(md_path, "w") as md_file:
+            md_file.write(md_doc.page_content)
+
+        # assert exists
+        assert os.path.exists(json_path)
+        assert os.path.exists(md_path)

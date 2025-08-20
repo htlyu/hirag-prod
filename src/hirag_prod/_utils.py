@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Iterable, List, Literal, Optional, TypeVar
+from typing import Any, Callable, Coroutine, Iterable, List, Optional, TypeVar
 from urllib.parse import urlparse
 
 import boto3
@@ -21,6 +21,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from tqdm.asyncio import tqdm
+
+from hirag_prod.schema import LoaderType
 
 logger = logging.getLogger("HiRAG")
 ENCODER = None
@@ -451,6 +453,23 @@ def upload_file_to_s3(input_file_path: str, s3_file_path: str) -> bool:
     return True
 
 
+def exists_s3_file(s3_file_path: str) -> bool:
+    if os.getenv("AWS_ACCESS_KEY_ID", None) is None:
+        raise ValueError("AWS_ACCESS_KEY_ID is not set")
+    if os.getenv("AWS_BUCKET_NAME", None) is None:
+        raise ValueError("AWS_BUCKET_NAME is not set")
+    s3_client = boto3.client("s3")
+    aws_bucket_name = os.getenv("AWS_BUCKET_NAME")
+    try:
+        s3_client.head_object(Bucket=aws_bucket_name, Key=s3_file_path)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            return False
+        logger.error(e)
+        return False
+
+
 # List files in s3
 def list_s3_files(prefix: str = None) -> bool:
     """
@@ -612,13 +631,11 @@ def list_oss_files(prefix: str = None) -> bool:
 # ========================================================================
 # File path router
 # ========================================================================
-def route_file_path(
-    loader_type: Literal["docling", "docling_cloud", "langchain"], url_path: str
-) -> str:
+def route_file_path(loader_type: LoaderType, url_path: str) -> str:
     """
     Parse a url path to a located file path
     """
-    if loader_type == "docling_cloud":
+    if loader_type == "docling_cloud" or loader_type == "dots_ocr":
         return url_path
 
     local_file_path = None

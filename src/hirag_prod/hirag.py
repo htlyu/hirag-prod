@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pyarrow as pa
+from docling_core.types.doc import DoclingDocument
 from dotenv import load_dotenv
 
 from ._llm import (
@@ -27,6 +28,7 @@ from .entity import BaseKG, VanillaKG
 from .loader import load_document
 from .loader.chunk_split import (
     chunk_docling_document,
+    chunk_dots_document,
     chunk_langchain_document,
 )
 from .parser import (
@@ -35,7 +37,7 @@ from .parser import (
 )
 from .prompt import PROMPTS
 from .resume_tracker import JobStatus, ResumeTracker
-from .schema import Relation
+from .schema import LoaderType, Relation
 from .storage import (
     BaseGDB,
     BaseVDB,
@@ -481,7 +483,7 @@ class DocumentProcessor:
         document_meta: Optional[Dict] = None,
         loader_configs: Optional[Dict] = None,
         job_id: Optional[str] = None,
-        loader_type: Literal["docling", "docling_cloud", "langchain"] = "docling_cloud",
+        loader_type: LoaderType = "docling_cloud",
     ) -> ProcessingMetrics:
         """Process a single document"""
         # TODO: Add document preprocessing pipeline for better quality - OCR, cleanup, etc.
@@ -493,6 +495,7 @@ class DocumentProcessor:
                 content_type,
                 document_meta,
                 loader_configs,
+                loader_type,
             )
 
             if not chunks:
@@ -584,6 +587,7 @@ class DocumentProcessor:
         content_type: str,
         document_meta: Optional[Dict],
         loader_configs: Optional[Dict],
+        loader_type: Optional[str],
     ) -> List[BaseChunk]:
         """Load and chunk document"""
         # TODO: Add parallel processing for multi-file documents and large files
@@ -600,16 +604,36 @@ class DocumentProcessor:
                     )
                     chunks = chunk_langchain_document(langchain_doc)
                 else:
-                    docling_doc, doc_md = await asyncio.to_thread(
-                        load_document,
-                        document_path,
-                        content_type,
-                        document_meta,
-                        loader_configs,
-                        loader_type="docling",
-                    )
-                    chunks = chunk_docling_document(docling_doc, doc_md)
-
+                    if loader_type == "docling_cloud" or loader_type == "docling":
+                        docling_doc, doc_md = await asyncio.to_thread(
+                            load_document,
+                            document_path,
+                            content_type,
+                            document_meta,
+                            loader_configs,
+                            loader_type="docling_cloud",
+                        )
+                        chunks = chunk_docling_document(docling_doc, doc_md)
+                    elif loader_type == "dots_ocr":
+                        json_doc, md_doc = await asyncio.to_thread(
+                            load_document,
+                            document_path,
+                            content_type,
+                            document_meta,
+                            loader_configs,
+                            loader_type="dots_ocr",
+                        )
+                        # Validate instance, as it may fall back to docling if cloud service unavailable
+                        if isinstance(json_doc, list):
+                            # Chunk the Dots OCR document
+                            chunks = chunk_dots_document(json_doc, md_doc)
+                        elif isinstance(json_doc, DoclingDocument):
+                            # Chunk the Docling document
+                            chunks = chunk_docling_document(json_doc, md_doc)
+                        else:
+                            raise DocumentProcessingError(
+                                "Invalid document format returned by loader"
+                            )
                 logger.info(
                     f"📄 Created {len(chunks)} chunks from document {document_path}"
                 )
@@ -1499,7 +1523,7 @@ class HiRAG:
         document_meta: Optional[Dict] = None,
         loader_configs: Optional[Dict] = None,
         job_id: Optional[str] = None,
-        loader_type: Literal["docling", "docling_cloud", "langchain"] = "docling_cloud",
+        loader_type: LoaderType = "docling_cloud",
     ) -> ProcessingMetrics:
         """
         Insert document into knowledge base

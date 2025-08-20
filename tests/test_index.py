@@ -9,7 +9,9 @@ from hirag_prod import HiRAG
 @pytest.mark.skip(reason="Skip the test for it is time-consuming")
 async def test_index():
     index = await HiRAG.create()
-    document_path = f"{os.path.dirname(__file__)}/Guide-to-U.S.-Healthcare-System.pdf"
+    document_path = (
+        f"{os.path.dirname(__file__)}/test_files/Guide-to-U.S.-Healthcare-System.pdf"
+    )
     content_type = "application/pdf"
     document_meta = {
         "type": "pdf",
