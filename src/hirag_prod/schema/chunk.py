@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from langchain_core.documents import Document
 from pydantic import BaseModel
@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from hirag_prod.schema.file import FileMetadata
 
 
+# If you change this file, you may need to change src/hirag_prod/hirag.py: class StorageManager: _initialize_chunks_table
 class ChunkMetadata(FileMetadata):
     knowledge_base_id: Optional[
         str
@@ -18,10 +19,12 @@ class ChunkMetadata(FileMetadata):
     page_width: Optional[float]  # the width of the page
     page_height: Optional[float]  # the height of the page
     document_id: Optional[str]  # The id of the document that the chunk is from
-    x_0: Optional[float]  # x coordinate of the top left corner of the bounding box
-    y_0: Optional[float]  # y coordinate of the top left corner of the bounding box
-    x_1: Optional[float]  # x coordinate of the bottom right corner of the bounding box
-    y_1: Optional[float]  # y coordinate of the bottom right corner of the bounding box
+    headers: Optional[List[str]]  # The header's chunk's id of the chunk
+    children: Optional[List[str]]  # The children's chunk's id of the chunk
+    caption: Optional[str]  # The caption of the chunk
+    bbox: Optional[
+        List[List[float]]
+    ]  # The bounding box of the chunk, may contain multiple boxes
 
 
 class Chunk(Document, BaseModel):
