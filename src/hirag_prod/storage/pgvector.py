@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from hirag_prod._utils import EmbeddingFunc
 from hirag_prod.storage.base_vdb import BaseVDB
 from hirag_prod.storage.pg_schema import Base as PGBase
-from hirag_prod.storage.pg_schema import create_chunks_model, create_triplets_model
+from hirag_prod.storage.pg_schema import (
+    create_chunks_model,
+    create_file_model,
+    create_triplets_model,
+)
 from hirag_prod.storage.pg_utils import DatabaseClient
 from hirag_prod.storage.retrieval_strategy_provider import RetrievalStrategyProvider
 
@@ -56,6 +60,7 @@ class PGVector(BaseVDB):
         self.models = {}  # cache of models for each table
         self.factories = {
             "Chunks": create_chunks_model,
+            "Files": create_file_model,
             "Triplets": create_triplets_model,
         }  # mapping of table names to model creation functions
 
@@ -127,6 +132,38 @@ class PGVector(BaseVDB):
                 vec = self._to_list(emb)
                 row = dict(props or {})
                 row["vector"] = vec
+                row["updatedAt"] = now
+                rows.append(row)
+
+            table = model.__table__
+            pk_cols = [c.name for c in table.primary_key.columns]
+            ins = insert(table).values(rows)
+            stmt = ins.on_conflict_do_nothing(
+                index_elements=[table.c[name] for name in pk_cols]
+            )
+
+            await session.execute(stmt)
+            await session.commit()
+            elapsed = time.perf_counter() - start
+            logger.info(
+                f"[upsert_texts] Upserted {len(rows)} into '{table_name}', mode={mode}, elapsed={elapsed:.3f}s"
+            )
+            return rows
+
+    async def upsert_file(
+        self,
+        properties_list: List[dict],
+        table_name: str = "Files",
+        mode: Literal["append", "overwrite"] = "append",
+    ):
+        model = self.get_model(table_name)
+
+        start = time.perf_counter()
+        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+            now = datetime.now()
+            rows = []
+            for props in properties_list:
+                row = dict(props or {})
                 row["updatedAt"] = now
                 rows.append(row)
 
@@ -239,8 +276,8 @@ class PGVector(BaseVDB):
             result = await session.execute(stmt)
             rows = list(result.scalars().all())
 
-            if columns_to_select is None:
-                columns_to_select = ["text", "uri", "fileName", "private", key_column]
+            if columns_to_select is None:  # query all if nothing provided
+                columns_to_select = [c.name for c in model.__table__.columns]
 
             out: List[dict] = []
             for r in rows:
@@ -306,11 +343,13 @@ class PGVector(BaseVDB):
             pass
         async with self.engine.begin() as conn:
             Chunks = self.get_model("Chunks")
+            Files = self.get_model("Files")
             Triplets = self.get_model("Triplets")
 
             def _create(sync_conn):
                 PGBase.metadata.create_all(
-                    bind=sync_conn, tables=[Chunks.__table__, Triplets.__table__]
+                    bind=sync_conn,
+                    tables=[Chunks.__table__, Files.__table__, Triplets.__table__],
                 )
 
             await conn.run_sync(_create)
