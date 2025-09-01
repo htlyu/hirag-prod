@@ -23,15 +23,15 @@ from hirag_prod._llm import (
     create_chat_service,
     create_embedding_service,
 )
-from hirag_prod._utils import _limited_gather_with_factory, compute_mdhash_id
+from hirag_prod._utils import _limited_gather_with_factory
 from hirag_prod.chunk import BaseChunk, FixTokenChunk
 from hirag_prod.entity import BaseKG, VanillaKG
 from hirag_prod.loader import load_document
 from hirag_prod.loader.chunk_split import (
+    build_rich_toc,
     chunk_docling_document,
     chunk_dots_document,
     chunk_langchain_document,
-    get_ToC_from_chunks,
 )
 from hirag_prod.parser import (
     DictParser,
@@ -649,8 +649,8 @@ class DocumentProcessor:
                             # Chunk the Dots OCR document
                             chunks = chunk_dots_document(json_doc, generated_md)
                             if generated_md:
-                                generated_md.tableOfContents = get_ToC_from_chunks(
-                                    chunks
+                                generated_md.tableOfContents = build_rich_toc(
+                                    chunks, generated_md
                                 )
                         elif isinstance(json_doc, DoclingDocument):
                             # Chunk the Docling document
