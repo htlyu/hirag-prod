@@ -26,7 +26,8 @@ def get_test(id: str):
             "uri": document_path,
             "private": False,
         }
-        return document_path, content_type, document_meta
+        query = "When did Lothair II's mother die?"
+        return document_path, content_type, document_meta, query
     elif id == "s3: small_pdf" or id == "2":
         document_path = f"s3://monkeyocr/test/input/test_pdf/small.pdf"
         content_type = "application/pdf"
@@ -36,7 +37,8 @@ def get_test(id: str):
             "uri": document_path,
             "private": False,
         }
-        return document_path, content_type, document_meta
+        query = "Machine Learning Detection Methods?"
+        return document_path, content_type, document_meta, query
     elif id == "oss: U.S.Health" or id == "3":
         document_path = (
             f"oss://graxy-dev/ofnil/tmp/test/Guide-to-U.S.-Healthcare-System.pdf"
@@ -48,7 +50,8 @@ def get_test(id: str):
             "uri": document_path,
             "private": False,
         }
-        return document_path, content_type, document_meta
+        query = "What are the key components of the U.S. healthcare system?"
+        return document_path, content_type, document_meta, query
 
 
 async def index():
@@ -58,7 +61,7 @@ async def index():
 
     await index.set_language("en")  # en | cn
 
-    document_path, content_type, document_meta = get_test("3")
+    document_path, content_type, document_meta, query = get_test("1")
 
     await index.insert_to_kb(
         document_path=document_path,
@@ -70,7 +73,7 @@ async def index():
     )
 
     ret = await index.query(
-        "Machine Learning Detection Methods?",
+        query=query,
         summary=True,
         workspace_id="test_workspace",
         knowledge_base_id="test_pg",
