@@ -53,7 +53,6 @@ class PGVector(BaseVDB):
             db_client.create_db_engine()
         )  # SQLAlchemy async engine for db operations
         self.vector_type = vector_type
-        self.models = {}  # cache of models for each table
         self.tables = {
             "Chunks": Chunk,
             "Files": File,
@@ -65,15 +64,9 @@ class PGVector(BaseVDB):
 
     # retrieves or creates a SQLAlchemy model for the specified table
     def get_model(self, table_name: str):
-        cls = self.__class__
-        model = cls._models.get(table_name)
-        if model:
-            return model
-        dim = int(os.getenv("EMBEDDING_DIMENSION"))
         model = self.tables.get(table_name)
         if not model:
             raise ValueError(f"No table found for table {table_name}")
-        self.models[table_name] = model
         return model
 
     # create a PGVector instance

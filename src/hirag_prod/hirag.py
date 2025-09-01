@@ -314,12 +314,6 @@ class StorageManager:
             mode="append",
         )
 
-    def _snake_to_camel(self, name: str) -> str:
-        if name == "filename":
-            return "fileName"
-        components = name.split("_")
-        return components[0] + "".join(word.capitalize() for word in components[1:])
-
     @retry_async(max_retries=DEFAULT_MAX_RETRIES, delay=DEFAULT_RETRY_DELAY)
     async def upsert_file_to_vdb(self, file: File) -> None:
         if not file:

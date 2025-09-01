@@ -366,7 +366,7 @@ def chunk_dots_document(
             pageImageUrl=None,
             pageWidth=page_width,
             pageHeight=page_height,
-            bbox=bboxes,
+            bbox=bbox,
             caption=dots_chunk.caption,
             # Terms using temporary idx, would be filled later after chunks created
             headers=None,
