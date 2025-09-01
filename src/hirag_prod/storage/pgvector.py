@@ -9,13 +9,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hirag_prod._utils import EmbeddingFunc
+from hirag_prod.schema import Chunk, File, Triplets
+from hirag_prod.schema.base import Base as PGBase
 from hirag_prod.storage.base_vdb import BaseVDB
-from hirag_prod.storage.pg_schema import Base as PGBase
-from hirag_prod.storage.pg_schema import (
-    create_chunks_model,
-    create_file_model,
-    create_triplets_model,
-)
 from hirag_prod.storage.pg_utils import DatabaseClient
 from hirag_prod.storage.retrieval_strategy_provider import RetrievalStrategyProvider
 
@@ -39,16 +35,9 @@ class PGVector(BaseVDB):
         strategy_provider (RetrievalStrategyProvider): Handles result ranking.
         engine: SQLAlchemy async engine for database operations.
         vector_type (str): Type of vector storage ('vector' or 'halfvec').
+        models (dict): Cache of SQLAlchemy table models.
+        tables (dict): Mapping of table names to model classes.
     """
-
-    # class-level shared caches to avoid redefining tables across instances
-    _models = {}
-    _factories = {
-        "Chunks": create_chunks_model,
-        "Files": create_file_model,
-        "Triplets": create_triplets_model,
-    }  # mapping of table names to model creation functions
-    _model_config = None  # (vector_type, dim)
 
     def __init__(
         self,
@@ -64,40 +53,20 @@ class PGVector(BaseVDB):
             db_client.create_db_engine()
         )  # SQLAlchemy async engine for db operations
         self.vector_type = vector_type
+        self.tables = {
+            "Chunks": Chunk,
+            "Files": File,
+            "Triplets": Triplets,
+        }  # mapping of table names to model creation functions
 
     def _to_list(self, embedding):
         return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
 
     # retrieves or creates a SQLAlchemy model for the specified table
     def get_model(self, table_name: str):
-        cls = self.__class__
-        model = cls._models.get(table_name)
-        if model:
-            return model
-
-        # resolve desired config from request
-        requested_dim = int(os.getenv("EMBEDDING_DIMENSION"))
-        requested_vector_type = self.vector_type
-
-        # enforce single class-wide config
-        if cls._model_config is None:
-            cls._model_config = (requested_vector_type, requested_dim)
-        else:
-            vector_type, dim = cls._model_config
-            if (vector_type, dim) != (requested_vector_type, requested_dim):
-                raise ValueError(
-                    f"PGVector models already initialized with vector_type={vector_type}, dim={dim}; "
-                    f"requested vector_type={requested_vector_type}, dim={requested_dim} for table '{table_name}' "
-                    "cannot be used."
-                )
-        factory = cls._factories.get(table_name)
-        if not factory:
-            raise ValueError(f"No factory found for table {table_name}")
-        model = factory(
-            use_halfvec=(requested_vector_type == "halfvec"),
-            dim=requested_dim,
-        )
-        cls._models[table_name] = model
+        model = self.tables.get(table_name)
+        if not model:
+            raise ValueError(f"No table found for table {table_name}")
         return model
 
     # create a PGVector instance
@@ -172,7 +141,7 @@ class PGVector(BaseVDB):
 
     async def upsert_file(
         self,
-        properties_list: List[dict],
+        file: File,
         table_name: str = "Files",
         mode: Literal["append", "overwrite"] = "append",
     ):
@@ -181,15 +150,12 @@ class PGVector(BaseVDB):
         start = time.perf_counter()
         async with AsyncSession(self.engine, expire_on_commit=False) as session:
             now = datetime.now()
-            rows = []
-            for props in properties_list:
-                row = dict(props or {})
-                row["updatedAt"] = now
-                rows.append(row)
+            row = dict(file)
+            row["updatedAt"] = now
 
             table = model.__table__
             pk_cols = [c.name for c in table.primary_key.columns]
-            ins = insert(table).values(rows)
+            ins = insert(table).values(row)
             stmt = ins.on_conflict_do_nothing(
                 index_elements=[table.c[name] for name in pk_cols]
             )
@@ -198,9 +164,9 @@ class PGVector(BaseVDB):
             await session.commit()
             elapsed = time.perf_counter() - start
             logger.info(
-                f"[upsert_texts] Upserted {len(rows)} into '{table_name}', mode={mode}, elapsed={elapsed:.3f}s"
+                f"[upsert_texts] Upserted file information into '{table_name}', mode={mode}, elapsed={elapsed:.3f}s"
             )
-            return rows
+            return row
 
     async def query(
         self,

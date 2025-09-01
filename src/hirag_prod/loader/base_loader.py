@@ -9,7 +9,7 @@ from langchain_core.document_loaders import BaseLoader as LangchainBaseLoader
 from hirag_prod._utils import compute_mdhash_id
 from hirag_prod.loader.docling_cloud import DoclingCloudClient
 from hirag_prod.loader.dots_ocr import DotsOCRClient
-from hirag_prod.schema import File, FileMetadata
+from hirag_prod.schema import File
 
 
 class BaseLoader(ABC):
@@ -37,17 +37,15 @@ class BaseLoader(ABC):
         docling_doc: DoclingDocument = self.loader_docling_cloud.convert(document_path)
         md_str: str = docling_doc.export_to_markdown()
         doc_md = File(
-            id=compute_mdhash_id(md_str, prefix="doc-"),
-            page_content=md_str,
-            metadata=FileMetadata(
-                type=document_meta.get("type", "pdf"),  # Default to pdf
-                filename=document_meta.get("filename", ""),
-                uri=document_meta.get("uri", ""),
-                private=document_meta.get("private"),
-                uploaded_at=document_meta.get("uploaded_at"),
-                knowledge_base_id=document_meta.get("knowledge_base_id", ""),
-                workspace_id=document_meta.get("workspace_id", ""),
-            ),
+            documentKey=compute_mdhash_id(md_str, prefix="doc-"),
+            text=md_str,
+            type=document_meta.get("type", "pdf"),  # Default to pdf
+            fileName=document_meta.get("fileName", ""),
+            uri=document_meta.get("uri", ""),
+            private=document_meta.get("private"),
+            uploadedAt=document_meta.get("uploadedAt"),
+            knowledgeBaseId=document_meta.get("knowledgeBaseId", ""),
+            workspaceId=document_meta.get("workspaceId", ""),
         )
         return docling_doc, doc_md
 
@@ -76,17 +74,17 @@ class BaseLoader(ABC):
 
         # Convert md to File
         md_doc = File(
-            id=compute_mdhash_id(md_doc_raw, prefix="doc-"),
-            page_content=md_doc_raw,
-            metadata=FileMetadata(
-                type=document_meta.get("type", "pdf"),  # Default to pdf
-                filename=document_meta.get("filename", ""),
-                uri=document_meta.get("uri", ""),
-                private=document_meta.get("private"),
-                uploaded_at=document_meta.get("uploaded_at"),
-                knowledge_base_id=document_meta.get("knowledge_base_id", ""),
-                workspace_id=document_meta.get("workspace_id", ""),
-            ),
+            documentKey=compute_mdhash_id(md_doc_raw, prefix="doc-"),
+            text=md_doc_raw,
+            type=document_meta.get("type", "pdf"),  # Default to pdf
+            pageNumber=len(json_doc),
+            fileName=document_meta.get("fileName", ""),
+            uri=document_meta.get("uri", ""),
+            private=document_meta.get("private"),
+            uploadedAt=document_meta.get("uploadedAt", ""),
+            knowledgeBaseId=document_meta.get("knowledgeBaseId", ""),
+            workspaceId=document_meta.get("workspaceId", ""),
+            markdownContent=md_doc_raw,
         )
 
         return json_doc, md_doc
@@ -110,17 +108,16 @@ class BaseLoader(ABC):
         ).document
         md_str: str = docling_doc.export_to_markdown()
         doc_md = File(
-            id=compute_mdhash_id(md_str, prefix="doc-"),
-            page_content=md_str,
-            metadata=FileMetadata(
-                type=document_meta.get("type", "pdf"),  # Default to pdf
-                filename=document_meta.get("filename", ""),
-                uri=document_meta.get("uri", ""),
-                private=document_meta.get("private"),
-                uploaded_at=document_meta.get("uploaded_at"),
-                knowledge_base_id=document_meta.get("knowledge_base_id", ""),
-                workspace_id=document_meta.get("workspace_id", ""),
-            ),
+            documentKey=compute_mdhash_id(md_str, prefix="doc-"),
+            text=md_str,
+            type=document_meta.get("type", "pdf"),  # Default to pdf
+            fileName=document_meta.get("fileName", ""),
+            uri=document_meta.get("uri", ""),
+            private=document_meta.get("private"),
+            uploadedAt=document_meta.get("uploadedAt"),
+            knowledgeBaseId=document_meta.get("knowledgeBaseId", ""),
+            workspaceId=document_meta.get("workspaceId", ""),
+            markdownContent=md_str,
         )
         return docling_doc, doc_md
 
@@ -140,16 +137,18 @@ class BaseLoader(ABC):
         assert document_meta.get("private") is not None, "private is required"
         langchain_docs = self.loader_langchain(document_path, **loader_args).load()
         doc_langchain = File(
-            id=compute_mdhash_id(langchain_docs[0].page_content, prefix="doc-"),
-            page_content=langchain_docs[0].page_content,
-            metadata=FileMetadata(
-                type=document_meta.get("type", "pdf"),  # Default to pdf
-                filename=document_meta.get("filename", ""),
-                uri=document_meta.get("uri", ""),
-                private=document_meta.get("private"),
-                uploaded_at=document_meta.get("uploaded_at"),
-                knowledge_base_id=document_meta.get("knowledge_base_id", ""),
-                workspace_id=document_meta.get("workspace_id", ""),
+            # Langchain Doc text stored in page_content
+            documentKey=compute_mdhash_id(
+                langchain_docs[0].page_content, prefix="doc-"
             ),
+            text=langchain_docs[0].page_content,
+            type=document_meta.get("type", "pdf"),  # Default to pdf
+            fileName=document_meta.get("fileName", ""),
+            uri=document_meta.get("uri", ""),
+            private=document_meta.get("private"),
+            uploadedAt=document_meta.get("uploadedAt"),
+            knowledgeBaseId=document_meta.get("knowledgeBaseId", ""),
+            workspaceId=document_meta.get("workspaceId", ""),
+            markdownContent=langchain_docs[0].page_content,
         )
         return doc_langchain
