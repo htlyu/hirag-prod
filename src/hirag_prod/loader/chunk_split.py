@@ -349,7 +349,7 @@ def chunk_dots_document(
         bbox = dots_chunk.bbox
 
         if left_bottom_origin and page_height is not None:
-            bbox_trans = _transform_bbox_dims(bbox, page_height)
+            bbox = _transform_bbox_dims(bbox, page_height)
 
         # Create the chunk content, including caption if available
         content = dots_chunk.text
