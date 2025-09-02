@@ -5,13 +5,20 @@ import logging
 import numbers
 import os
 import re
-import time
-from contextlib import contextmanager
-from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Iterable, List, Optional, TypeVar
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    List,
+    Optional,
+    TypeAlias,
+    TypeVar,
+)
 from urllib.parse import urlparse
 
 import boto3
@@ -22,6 +29,7 @@ from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from tqdm.asyncio import tqdm
 
+from hirag_prod.configs.functions import get_hi_rag_config
 from hirag_prod.schema import LoaderType
 
 logger = logging.getLogger("HiRAG")
@@ -29,6 +37,34 @@ ENCODER = None
 S3_DOWNLOAD_DIR = "/chatbot/files/s3"
 OSS_DOWNLOAD_DIR = "/chatbot/files/oss"
 load_dotenv("/chatbot/.env")
+
+
+def retry_async(
+    max_retries: int = get_hi_rag_config().max_retries,
+    delay: float = get_hi_rag_config().retry_delay,
+):
+    """Async retry decorator"""
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt == max_retries - 1:
+                        break
+                    logger.warning(
+                        f"Attempt {attempt + 1} failed: {e}, retrying in {delay}s"
+                    )
+                    await asyncio.sleep(delay)
+            raise last_exception
+
+        return wrapper
+
+    return decorator
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -249,101 +285,7 @@ def validate_document_path(document_path: str) -> None:
 
 
 # Utils types -----------------------------------------------------------------------
-@dataclass
-class EmbeddingFunc:
-    embedding_dim: int
-    max_token_size: int
-    func: callable
-
-    async def __call__(self, *args, **kwargs) -> np.ndarray:
-        return await self.func(*args, **kwargs)
-
-
-# Decorators ------------------------------------------------------------------------
-def limit_async_func_call(max_size: int, waitting_time: float = 0.0001):
-    """Add restriction of maximum async calling times for a async func"""
-
-    def final_decro(func):
-        """Not using async.Semaphore to aovid use nest-asyncio"""
-        __current_size = 0
-
-        @wraps(func)
-        async def wait_func(*args, **kwargs):
-            nonlocal __current_size
-            while __current_size >= max_size:
-                await asyncio.sleep(waitting_time)
-            __current_size += 1
-            result = await func(*args, **kwargs)
-            __current_size -= 1
-            return result
-
-        return wait_func
-
-    return final_decro
-
-
-def wrap_embedding_func_with_attrs(**kwargs):
-    """Wrap a function with attributes"""
-
-    def final_decro(func) -> EmbeddingFunc:
-        new_func = EmbeddingFunc(**kwargs, func=func)
-        return new_func
-
-    return final_decro
-
-
-@contextmanager
-def timer():
-    start_time = time.perf_counter()
-    try:
-        yield
-    finally:
-        end_time = time.perf_counter()
-        elapsed_time = end_time - start_time
-        logging.info(f"[Retrieval Time: {elapsed_time:.6f} seconds]")
-
-
-async def _handle_single_entity_extraction(
-    record_attributes: list[str],
-    chunk_key: str,
-):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
-        return None
-    # add this record as a node in the G
-    entity_name = clean_str(record_attributes[1].upper())
-    if not entity_name.strip():
-        return None
-    entity_type = clean_str(record_attributes[2].upper())
-    entity_description = clean_str(record_attributes[3])
-    entity_source_id = chunk_key
-    return dict(
-        entity_name=entity_name,
-        entity_type=entity_type,
-        description=entity_description,
-        source_id=entity_source_id,
-    )
-
-
-async def _handle_single_relationship_extraction(
-    record_attributes: list[str],
-    chunk_key: str,
-):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
-        return None
-    # add this record as edge
-    source = clean_str(record_attributes[1].upper())
-    target = clean_str(record_attributes[2].upper())
-    edge_description = clean_str(record_attributes[3])
-    weight = (
-        float(record_attributes[-1]) if is_float_regex(record_attributes[-1]) else 1.0
-    )
-    return dict(
-        src_id=source,
-        tgt_id=target,
-        weight=weight,
-        description=edge_description,
-        source_id=chunk_key,
-    )
+AsyncEmbeddingFunction: TypeAlias = Callable[[list[str]], Awaitable[np.ndarray]]
 
 
 T = TypeVar("T")

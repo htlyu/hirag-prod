@@ -4,10 +4,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from contextual import AsyncContextualAI
-from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hirag_prod.storage.pg_utils import DatabaseClient
+from hirag_prod.storage.pg_utils import queryContextResult, saveContextResult
 
 
 class ContextualClient:
@@ -36,13 +35,6 @@ class ContextualClient:
                 "API key must be provided either as an argument or through the CONTEXTUAL_API_KEY environment variable."
             )
         self.client = AsyncContextualAI(api_key=self.api_key)
-        self.db_client = DatabaseClient()
-
-    def create_db_engine(self, connection_string: str) -> AsyncEngine:
-        """
-        Create a new SQLAlchemy engine via db_client.
-        """
-        return self.db_client.create_db_engine(connection_string)
 
     async def get_parse_status(self, job_id: str) -> Dict[str, Any]:
         """
@@ -74,7 +66,7 @@ class ContextualClient:
         try:
             # First check if results are cached in database (if session is provided)
             if session:
-                cached_result = await self.db_client.queryContextResult(session, job_id)
+                cached_result = await queryContextResult(session, job_id)
                 if cached_result:
                     return cached_result
 
@@ -96,9 +88,7 @@ class ContextualClient:
 
             # Save to database if session is provided
             if session:
-                saved_dict = await self.db_client.saveContextResult(
-                    session, result_dict
-                )
+                saved_dict = await saveContextResult(session, result_dict)
                 return saved_dict
             else:
                 return result_dict

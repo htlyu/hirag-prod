@@ -5,13 +5,12 @@ from typing import List, Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from hirag_prod._utils import EmbeddingFunc
+from hirag_prod._utils import AsyncEmbeddingFunction
+from hirag_prod.resources.functions import get_db_engine, get_db_session_maker
 from hirag_prod.schema import Chunk, File, Triplets
 from hirag_prod.schema.base import Base as PGBase
 from hirag_prod.storage.base_vdb import BaseVDB
-from hirag_prod.storage.pg_utils import DatabaseClient
 from hirag_prod.storage.retrieval_strategy_provider import RetrievalStrategyProvider
 
 logger = logging.getLogger(__name__)
@@ -29,28 +28,20 @@ class PGVector(BaseVDB):
     or specific keys, leveraging SQLAlchemy for database operations.
 
     Attributes:
-        embedding_func (EmbeddingFunc): Function to generate text embeddings.
-        db_client (DatabaseClient): Manages database connections.
+        embedding_func (Optional[AsyncEmbeddingFunction]): Function to generate text embeddings.
         strategy_provider (RetrievalStrategyProvider): Handles result ranking.
-        engine: SQLAlchemy async engine for database operations.
         vector_type (str): Type of vector storage ('vector' or 'halfvec').
-        models (dict): Cache of SQLAlchemy table models.
         tables (dict): Mapping of table names to model classes.
     """
 
     def __init__(
         self,
-        embedding_func: EmbeddingFunc,
-        db_client: DatabaseClient,
+        embedding_func: Optional[AsyncEmbeddingFunction],
         strategy_provider: "RetrievalStrategyProvider",
         vector_type: Literal["vector", "halfvec"] = "halfvec",
     ):
         self.embedding_func = embedding_func
-        self.db_client = db_client  # manages the database connection
         self.strategy_provider = strategy_provider
-        self.engine = (
-            db_client.create_db_engine()
-        )  # SQLAlchemy async engine for db operations
         self.vector_type = vector_type
         self.tables = {
             "Chunks": Chunk,
@@ -72,16 +63,11 @@ class PGVector(BaseVDB):
     @classmethod
     def create(
         cls,
-        embedding_func: EmbeddingFunc,
-        db_url: str,
+        embedding_func: Optional[AsyncEmbeddingFunction],
         strategy_provider: "RetrievalStrategyProvider",
         vector_type: Literal["vector", "halfvec"] = "halfvec",
     ):
-        db_client = DatabaseClient()
-        db_client.connection_string = db_url
-        instance = cls(
-            embedding_func, db_client, strategy_provider, vector_type=vector_type
-        )
+        instance = cls(embedding_func, strategy_provider, vector_type=vector_type)
         return instance
 
     # upserts a single text embedding into the specified table
@@ -112,7 +98,7 @@ class PGVector(BaseVDB):
         model = self.get_model(table_name)
 
         start = time.perf_counter()
-        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+        async with get_db_session_maker()() as session:
             embs = await self.embedding_func(texts_to_embed)
             now = datetime.now()
             rows = []
@@ -147,7 +133,7 @@ class PGVector(BaseVDB):
         model = self.get_model(table_name)
 
         start = time.perf_counter()
-        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+        async with get_db_session_maker()() as session:
             now = datetime.now()
             row = dict(file)
             row["updatedAt"] = now
@@ -192,7 +178,7 @@ class PGVector(BaseVDB):
         model = self.get_model(table_name)
 
         start = time.perf_counter()
-        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+        async with get_db_session_maker()() as session:
             q_emb = (await self.embedding_func([query]))[0]
             q_emb = self._to_list(q_emb)
 
@@ -247,7 +233,7 @@ class PGVector(BaseVDB):
         limit: Optional[int] = None,
     ) -> List[dict]:
         model = self.get_model(table_name)
-        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+        async with get_db_session_maker()() as session:
             stmt = select(model)
             if key_value:
                 stmt = stmt.where(getattr(model, key_column).in_(key_value))
@@ -289,7 +275,7 @@ class PGVector(BaseVDB):
         table_name: str,
     ) -> List[str]:
         model = self.get_model(table_name)
-        async with AsyncSession(self.engine, expire_on_commit=False) as s:
+        async with get_db_session_maker()() as s:
             stmt = (
                 select(model)
                 .where(model.uri == uri)
@@ -306,7 +292,7 @@ class PGVector(BaseVDB):
 
     async def get_table(self, table_name: str) -> List[dict]:
         model = self.get_model(table_name)
-        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+        async with get_db_session_maker()() as session:
             result = await session.execute(select(model))
             rows = list(result.scalars().all())
             out = []
@@ -324,9 +310,7 @@ class PGVector(BaseVDB):
             return out
 
     async def _init_vdb(self, embedding_dimension: int, *args, **kwargs):
-        async with AsyncSession(self.engine, expire_on_commit=False) as _:
-            pass
-        async with self.engine.begin() as conn:
+        async with get_db_engine().begin() as conn:
             Chunks = self.get_model("Chunks")
             Files = self.get_model("Files")
             Triplets = self.get_model("Triplets")
@@ -338,6 +322,3 @@ class PGVector(BaseVDB):
                 )
 
             await conn.run_sync(_create)
-
-    async def clean_up(self):
-        await self.engine.dispose()

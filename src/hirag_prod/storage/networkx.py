@@ -2,11 +2,12 @@ import asyncio
 import os
 import pickle
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import networkx as nx
 
 from hirag_prod._utils import _limited_gather_with_factory
+from hirag_prod.configs.functions import get_hi_rag_config
 from hirag_prod.schema import Entity, Relation
 from hirag_prod.storage.base_gdb import BaseGDB
 from hirag_prod.summarization import BaseSummarizer, TrancatedAggregateSummarizer
@@ -261,9 +262,9 @@ class NetworkXGDB(BaseGDB):
         self,
         workspace_id: str,
         knowledge_base_id: str,
-        reset_weights: dict[str, float],
-        topk: int,
-        alpha: float = 0.85,
+        reset_weights: Dict[str, float],
+        topk: int = get_hi_rag_config().default_query_top_k,
+        alpha: float = get_hi_rag_config().default_pagerank_damping,
     ) -> List[tuple[str, float]]:
         """Compute personalized PageRank with a provided reset/personalization vector.
 

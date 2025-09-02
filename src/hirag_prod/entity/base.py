@@ -11,5 +11,7 @@ class BaseKG(ABC):
     entity_extract_prompt: str
 
     @abstractmethod
-    def construct_kg(self, chunks: List[Chunk]) -> Tuple[List[Entity], List[Relation]]:
+    async def construct_kg(
+        self, chunks: List[Chunk]
+    ) -> Tuple[List[Entity], List[Relation]]:
         pass

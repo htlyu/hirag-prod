@@ -1,19 +1,13 @@
 import asyncio
 import logging
-import os
 import time
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import wraps
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 from docling_core.types.doc import DoclingDocument
 from dotenv import load_dotenv
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from hirag_prod._llm import (
     ChatCompletion,
@@ -25,25 +19,35 @@ from hirag_prod._llm import (
 )
 from hirag_prod._utils import _limited_gather_with_factory
 from hirag_prod.chunk import BaseChunk, FixTokenChunk
+from hirag_prod.configs.functions import (
+    get_config_manager,
+    get_hi_rag_config,
+    initialize_config_manager,
+)
 from hirag_prod.entity import BaseKG, VanillaKG
+from hirag_prod.exceptions import (
+    DocumentProcessingError,
+    HiRAGException,
+    KGConstructionError,
+)
 from hirag_prod.loader import load_document
 from hirag_prod.loader.chunk_split import (
-    build_rich_toc,
     chunk_docling_document,
     chunk_dots_document,
-    chunk_langchain_document,
+    chunk_langchain_document, build_rich_toc,
 )
+from hirag_prod.metrics import MetricsCollector, ProcessingMetrics
 from hirag_prod.parser import (
     DictParser,
     ReferenceParser,
 )
 from hirag_prod.prompt import PROMPTS
+from hirag_prod.resources.functions import initialize_resource_manager
 from hirag_prod.resume_tracker import JobStatus, ResumeTracker
 from hirag_prod.schema import (
     Chunk,
     File,
     LoaderType,
-    Relation,
 )
 from hirag_prod.storage import (
     BaseGDB,
@@ -53,50 +57,10 @@ from hirag_prod.storage import (
     RetrievalStrategyProvider,
 )
 from hirag_prod.storage.pgvector import PGVector
+from hirag_prod.storage.query_service import QueryService
+from hirag_prod.storage.storage_manager import StorageManager
 
 load_dotenv("/chatbot/.env")
-
-# ============================================================================
-# Constants and Default Values
-# ============================================================================
-
-# Database Configuration
-DEFAULT_VDB_TYPE = "lancedb"
-DEFAULT_GDB_TYPE = "networkx"
-DEFAULT_VECTOR_DB_PATH = "kb/hirag.db"
-DEFAULT_GRAPH_DB_PATH = "kb/hirag.gpickle"
-
-# Model Configuration
-DEFAULT_LLM_MODEL_NAME = "gpt-4o"
-DEFAULT_MAX_TOKENS = 16000  # Default max tokens for LLM
-
-# Chunking Configuration
-DEFAULT_CHUNK_SIZE = 1200
-DEFAULT_CHUNK_OVERLAP = 200
-
-# Batch Processing Configuration
-DEFAULT_EMBEDDING_BATCH_SIZE = 1000  # Optimized for both OpenAI and local services
-DEFAULT_ENTITY_UPSERT_CONCURRENCY = 32
-DEFAULT_RELATION_UPSERT_CONCURRENCY = 32
-
-# Retry Configuration
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_DELAY = 1.0
-
-# Reference Configuration
-DEFAULT_SIMILARITY_THRESHOLD = 0.5  # Default threshold for similarity, only shows references with similarity above this value
-DEFAULT_SIMILARITY_MAX_DIFFERENCE = 0.15  # If found a most similar reference already, only accept other references with similarity having this difference or less
-DEFAULT_MAX_REFERENCES = 3  # Maximum number of references to return
-
-SUPPORTED_LANGUAGES = ["en", "cn-s", "cn-t"]  # Supported languages for generation
-
-# Query and Operation Constants
-MAX_CHUNK_IDS_PER_QUERY = 10
-DEFAULT_QUERY_TOPK = 10
-DEFAULT_QUERY_TOPN = 5
-DEFAULT_LINK_TOP_K = 30
-DEFAULT_PASSAGE_NODE_WEIGHT = 1.0
-DEFAULT_PAGERANK_DAMPING = 0.85
 
 # Configure Logging
 logging.basicConfig(
@@ -105,356 +69,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("HiRAG")
-
-
-# ============================================================================
-# Exception Definitions
-# ============================================================================
-
-
-class HiRAGException(Exception):
-    """HiRAG base exception class"""
-
-
-class DocumentProcessingError(HiRAGException):
-    """Document processing exception"""
-
-
-class KGConstructionError(HiRAGException):
-    """Knowledge graph construction exception"""
-
-
-class StorageError(HiRAGException):
-    """Storage exception"""
-
-
-# ============================================================================
-# Configuration Management
-# ============================================================================
-
-
-@dataclass
-class HiRAGConfig:
-    """HiRAG system configuration"""
-
-    # Database configuration
-    vector_db_path: str = DEFAULT_VECTOR_DB_PATH
-    graph_db_path: str = DEFAULT_GRAPH_DB_PATH
-    vdb_type: Literal["lancedb", "pgvector"] = DEFAULT_VDB_TYPE
-    gdb_type: Literal["networkx", "neo4j"] = (
-        DEFAULT_GDB_TYPE  # TODO: neo4j not implemented yet
-    )
-
-    # Redis Configuration for resume tracker
-    redis_url: str = os.environ.get("REDIS_URL", "redis://redis:6379/2")
-    redis_key_prefix: str = os.environ.get("REDIS_KEY_PREFIX", "hirag")
-
-    # Model configuration
-    llm_model_name: str = DEFAULT_LLM_MODEL_NAME
-    llm_max_tokens: int = DEFAULT_MAX_TOKENS  # Default max tokens for LLM
-    llm_timeout: float = 30.0  # Default timeout for LLM requests
-
-    # Chunking configuration
-    chunk_size: int = DEFAULT_CHUNK_SIZE
-    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
-
-    # Batch processing configuration
-    embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
-    entity_upsert_concurrency: int = DEFAULT_ENTITY_UPSERT_CONCURRENCY
-    relation_upsert_concurrency: int = DEFAULT_RELATION_UPSERT_CONCURRENCY
-
-    # Retry configuration
-    max_retries: int = DEFAULT_MAX_RETRIES
-    retry_delay: float = DEFAULT_RETRY_DELAY
-
-    # Vector and Schema Configuration
-    embedding_dimension: int = int(os.getenv("EMBEDDING_DIMENSION"))
-
-
-# ============================================================================
-# Metrics and Monitoring
-# ============================================================================
-
-
-@dataclass
-class ProcessingMetrics:
-    """Processing metrics"""
-
-    total_chunks: int = 0
-    processed_chunks: int = 0
-    total_entities: int = 0
-    total_relations: int = 0
-    processing_time: float = 0.0
-    error_count: int = 0
-    job_id: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "total_chunks": self.total_chunks,
-            "processed_chunks": self.processed_chunks,
-            "total_entities": self.total_entities,
-            "total_relations": self.total_relations,
-            "processing_time": self.processing_time,
-            "error_count": self.error_count,
-            "job_id": self.job_id,
-        }
-
-
-class MetricsCollector:
-    """Metrics collector"""
-
-    def __init__(self):
-        self.metrics = ProcessingMetrics()
-        self.operation_times: Dict[str, float] = {}
-
-    @asynccontextmanager
-    async def track_operation(self, operation: str):
-        """Track operation execution time"""
-        start = time.perf_counter()
-        try:
-            logger.info(f"🚀 Starting {operation}")
-            yield
-            duration = time.perf_counter() - start
-            self.operation_times[operation] = duration
-            logger.info(f"✅ Completed {operation} in {duration:.3f}s")
-        except Exception as e:
-            self.metrics.error_count += 1
-            duration = time.perf_counter() - start
-            logger.error(f"❌ Failed {operation} after {duration:.3f}s: {e}")
-            raise
-
-
-# ============================================================================
-# Utility Functions
-# ============================================================================
-
-
-def retry_async(
-    max_retries: int = DEFAULT_MAX_RETRIES, delay: float = DEFAULT_RETRY_DELAY
-):
-    """Async retry decorator"""
-
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    if attempt == max_retries - 1:
-                        break
-                    logger.warning(
-                        f"Attempt {attempt + 1} failed: {e}, retrying in {delay}s"
-                    )
-                    await asyncio.sleep(delay)
-            raise last_exception
-
-        return wrapper
-
-    return decorator
-
-
-def validate_input(document_path: str, content_type: str) -> None:
-    """Validate input parameters"""
-    if not document_path or not isinstance(document_path, str):
-        raise ValueError("document_path must be a non-empty string")
-
-    if not Path(document_path).exists():
-        raise FileNotFoundError(f"Document not found: {document_path}")
-
-    if not content_type or not isinstance(content_type, str):
-        raise ValueError("content_type must be a non-empty string")
-
-
-# ============================================================================
-# Storage Manager
-# ============================================================================
-
-
-class StorageManager:
-    """Unified manager for vector database and graph database operations."""
-
-    def __init__(
-        self,
-        vdb: BaseVDB,
-        gdb: BaseGDB,
-        embedding_dimension: int,
-        vdb_type: Literal["lancedb", "pgvector"] = "lancedb",
-        gdb_type: Literal["neo4j", "networkx"] = "networkx",
-    ):
-        self.vdb = vdb
-        self.gdb = gdb
-        self.files_table = None
-        self.embedding_dimension = embedding_dimension
-        self.vdb_type = vdb_type
-        self.gdb_type = gdb_type
-
-    async def initialize(self) -> None:
-        """Initialize storage tables"""
-        try:
-            await self.vdb._init_vdb(embedding_dimension=self.embedding_dimension)
-        except Exception as e:
-            raise StorageError(f"Failed to initialize VDB: {e}")
-        if (
-            self.vdb_type == "lancedb"
-        ):  # TODO: temporary fix for hardcode lancedb connection logic
-            await self._initialize_files_table()
-
-    @retry_async(max_retries=DEFAULT_MAX_RETRIES, delay=DEFAULT_RETRY_DELAY)
-    async def upsert_chunks_to_vdb(self, chunks: List[Chunk]) -> None:
-        if not chunks:
-            return
-        texts_to_embed = [c.text for c in chunks]
-        await self.vdb.upsert_texts(
-            texts_to_embed=texts_to_embed,
-            properties_list=chunks,
-            table_name="Chunks",
-            mode="append",
-        )
-
-    @retry_async(max_retries=DEFAULT_MAX_RETRIES, delay=DEFAULT_RETRY_DELAY)
-    async def upsert_file_to_vdb(self, file: File) -> None:
-        if not file:
-            return
-        await self.vdb.upsert_file(
-            file=file,
-            mode="append",
-        )
-
-    @retry_async(max_retries=DEFAULT_MAX_RETRIES, delay=DEFAULT_RETRY_DELAY)
-    async def upsert_relations_to_vdb(self, relations: List[Relation]) -> None:
-        if not relations:
-            return
-        filtered = [r for r in relations if not r.source.startswith("chunk-")]
-        if not filtered:
-            return
-        texts_to_embed = [r.properties.get("description", "") for r in filtered]
-        properties_list = [
-            {
-                "source": r.source,
-                "target": r.target,
-                "description": r.properties.get("description", ""),
-                "fileName": r.properties.get("file_name", ""),
-                "knowledgeBaseId": r.properties.get("knowledge_base_id", ""),
-                "workspaceId": r.properties.get("workspace_id", ""),
-            }
-            for r in filtered
-        ]
-        await self.vdb.upsert_texts(
-            texts_to_embed=texts_to_embed,
-            properties_list=properties_list,
-            table_name="Triplets",
-            mode="append",
-        )
-
-    async def get_existing_chunks(
-        self, uri: str, workspace_id: str, knowledge_base_id: str
-    ) -> List[str]:
-        try:
-            return await self.vdb.get_existing_document_keys(
-                uri=uri,
-                workspace_id=workspace_id,
-                knowledge_base_id=knowledge_base_id,
-                table_name="Chunks",
-            )
-        except Exception as e:
-            logger.warning(f"Failed to get existing chunks: {e}")
-            return []
-
-    async def query_chunks(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int,
-        topn: Optional[int],
-        rerank: bool,
-    ) -> List[Dict[str, Any]]:
-        rows = await self.vdb.query(
-            query=query,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            table_name="Chunks",
-            topk=topk,
-            topn=topn,
-            columns_to_select=[
-                "text",
-                "uri",
-                "fileName",
-                "private",
-                "updatedAt",
-                "documentKey",
-            ],
-            rerank=rerank,
-        )
-        return rows
-
-    async def query_triplets(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int,
-        topn: Optional[int],
-        rerank: bool,
-    ) -> List[Dict[str, Any]]:
-        rows = await self.vdb.query(
-            query=query,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            table_name="Triplets",
-            topk=topk,
-            topn=topn,
-            columns_to_select=["source", "target", "description", "fileName"],
-            rerank=rerank,
-        )
-        return rows
-
-    async def query_by_keys(
-        self,
-        chunk_ids: List[str],
-        workspace_id: str,
-        knowledge_base_id: str,
-        columns_to_select: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        rows = await self.vdb.query_by_keys(
-            key_value=chunk_ids,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            table_name="Chunks",
-            key_column="documentKey",
-            columns_to_select=columns_to_select or ["documentKey", "vector"],
-        )
-        return rows
-
-    # ------------------------------ Health/Cleanup ------------------------------
-    async def health_check(self) -> Dict[str, bool]:
-        health: Dict[str, bool] = {}
-        try:
-            if self.vdb_type == "lancedb":
-                await self.vdb.db.table_names()
-            elif self.vdb_type == "pgvector":
-                async with AsyncSession(self.vdb.engine, expire_on_commit=False) as s:
-                    await s.execute(select(1))
-            health["vdb"] = True
-        except Exception:
-            health["vdb"] = False
-
-        try:
-            await self.gdb.health_check() if hasattr(self.gdb, "health_check") else None
-            health["gdb"] = True
-        except Exception:
-            health["gdb"] = False
-        return health
-
-    async def cleanup(self) -> None:
-        try:
-            await self.gdb.clean_up()
-            await self.vdb.clean_up()
-        except Exception as e:
-            logger.warning(f"Cleanup failed: {e}")
 
 
 # ============================================================================
@@ -470,15 +84,13 @@ class DocumentProcessor:
         storage: StorageManager,
         chunker: BaseChunk,
         kg_constructor: BaseKG,
-        resume_tracker: Optional[object] = None,
-        config: Optional[HiRAGConfig] = None,
+        resume_tracker: Optional[ResumeTracker] = None,
         metrics: Optional[MetricsCollector] = None,
     ):
         self.storage = storage
         self.chunker = chunker
         self.kg_constructor = kg_constructor
         self.resume_tracker = resume_tracker
-        self.config = config or HiRAGConfig()
         self.metrics = metrics or MetricsCollector()
 
     async def process_document(
@@ -735,7 +347,8 @@ class DocumentProcessor:
                     for rel in relations
                 ]
                 await _limited_gather_with_factory(
-                    gdb_relation_factories, self.config.relation_upsert_concurrency
+                    gdb_relation_factories,
+                    get_hi_rag_config().relation_upsert_concurrency,
                 )
 
                 # Store to vector database for semantic search
@@ -752,346 +365,6 @@ class DocumentProcessor:
 
 
 # ============================================================================
-# Query Service
-# ============================================================================
-
-
-class QueryService:
-    """Query service"""
-
-    def __init__(self, storage: StorageManager):
-        self.storage = storage
-
-    async def query_chunks(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
-        topn: int = DEFAULT_QUERY_TOPN,
-        rerank: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """Query chunks via unified storage"""
-        return await self.storage.query_chunks(
-            query=query,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            topk=topk,
-            topn=topn,
-            rerank=rerank,
-        )
-
-    async def recall_chunks(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
-        topn: int = DEFAULT_QUERY_TOPN,
-        rerank: bool = False,
-    ) -> Dict[str, Any]:
-        """Recall chunks and return both raw results and extracted chunk_ids.
-
-        Args:
-            query: Query string.
-            topk: Number of results to return.
-            topn: Number of results to rerank.
-            rerank: Whether to rerank the results.
-
-        Returns:
-            Dict with keys:
-                - "chunks": raw chunk search results
-                - "chunk_ids": list of document_key values
-        """
-        chunks = await self.query_chunks(
-            query,
-            topk=topk,
-            topn=topn,
-            rerank=rerank,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-        )
-        chunk_ids = [c.get("documentKey") for c in chunks if c.get("documentKey")]
-        return {"chunks": chunks, "chunk_ids": chunk_ids}
-
-    async def query_triplets(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
-        topn: int = DEFAULT_QUERY_TOPN,
-        rerank: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """Query relations using unified storage"""
-        return await self.storage.query_triplets(
-            query=query,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            topk=topk,
-            topn=topn,
-            rerank=rerank,
-        )
-
-    async def recall_triplets(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
-        topn: int = DEFAULT_QUERY_TOPN,
-    ) -> Dict[str, Any]:
-        """Recall triplets and return both raw results and aggregated entity_ids.
-
-        Args:
-            query: Query string.
-            topk: Number of results to return.
-            topn: Optional rerank pool size for relations (forwarded to underlying query).
-
-        Returns:
-            Dict with keys:
-                - "relations": raw triplet search results
-                - "entity_ids": unique list of entity ids appearing as source/target
-        """
-        relations = await self.query_triplets(
-            query,
-            topk=topk,
-            topn=topn,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-        )
-        entity_id_set = set()
-        for rel in relations:
-            src = rel.get("source")
-            tgt = rel.get("target")
-            if src:
-                entity_id_set.add(src)
-            if tgt:
-                entity_id_set.add(tgt)
-        return {"relations": relations, "entity_ids": list(entity_id_set)}
-
-    async def query_chunk_embeddings(
-        self, workspace_id: str, knowledge_base_id: str, chunk_ids: List[str]
-    ) -> Dict[str, Any]:
-        """Query chunk embeddings"""
-        if not chunk_ids:
-            return {}
-
-        res = {}
-        try:
-            rows = await self.storage.query_by_keys(
-                chunk_ids=chunk_ids,
-                workspace_id=workspace_id,
-                knowledge_base_id=knowledge_base_id,
-                columns_to_select=["documentKey", "vector"],
-            )
-            for row in rows:
-                key = row.get("documentKey")
-                if key and row.get("vector") is not None:
-                    res[key] = row.get("vector")
-                elif key:
-                    logger.warning(f"Chunk {key} has no vector data")
-                    res[key] = None
-        except Exception as e:
-            logger.error(f"Failed to query chunk embeddings: {e}")
-            return {}
-        return res
-
-    async def get_chunks_by_ids(
-        self,
-        chunk_ids: List[str],
-        workspace_id: str,
-        knowledge_base_id: str,
-        columns_to_select: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Fetch chunk rows by document_key list, preserving input order where possible."""
-        if not chunk_ids:
-            return []
-        if columns_to_select is None:
-            columns_to_select = [
-                "text",
-                "uri",
-                "fileName",
-                "private",
-                "updatedAt",
-                "documentKey",
-            ]
-        rows = await self.storage.query_by_keys(
-            chunk_ids=chunk_ids,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            columns_to_select=columns_to_select,
-        )
-        # Build map for stable ordering
-        by_id = {row.get("documentKey"): row for row in rows}
-        return [by_id[cid] for cid in chunk_ids if cid in by_id]
-
-    async def dual_recall_with_pagerank(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
-        topn: int = DEFAULT_QUERY_TOPN,
-        link_top_k: int = DEFAULT_LINK_TOP_K,
-        passage_node_weight: float = DEFAULT_PASSAGE_NODE_WEIGHT,
-        damping: float = DEFAULT_PAGERANK_DAMPING,
-    ) -> Dict[str, Any]:
-        """Two-path retrieval + PageRank fusion.
-
-        - Recall chunks to form passage reset weights
-        - Recall triplets to form phrase (entity) reset weights with frequency penalty
-        - Build reset = phrase_weights + passage_weights and run Personalized PageRank
-        - If no facts, fall back to DPR order (query rerank order)
-        """
-        # Path 1: chunk recall (rerank happens in VDB query)
-        chunk_recall = await self.recall_chunks(
-            query,
-            topk=topk,
-            topn=topn,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-        )
-        query_chunks = chunk_recall["chunks"]
-        query_chunk_ids = chunk_recall["chunk_ids"]
-
-        # Path 2: triplet recall -> entity seeds
-        triplet_recall = await self.recall_triplets(
-            query=query,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            topk=topk,
-            topn=topn,
-        )
-        query_triplets = triplet_recall["relations"]
-        query_entity_ids = triplet_recall["entity_ids"]
-
-        # Build passage weights from chunk ranks (approximate DPR)
-        passage_weights: Dict[str, float] = {}
-        if chunk_recall["chunk_ids"]:
-            # Inverse-rank weights then min-max normalize
-            raw_weights = []
-            for rank, cid in enumerate(query_chunk_ids):
-                if cid:
-                    w = 1.0 / (rank + 1)
-                    passage_weights[cid] = w
-                    raw_weights.append(w)
-            if raw_weights:
-                min_w, max_w = min(raw_weights), max(raw_weights)
-                scale = (max_w - min_w) if (max_w - min_w) > 0 else 1.0
-                for cid in list(passage_weights.keys()):
-                    passage_weights[cid] = (
-                        (passage_weights[cid] - min_w) / scale
-                    ) * passage_node_weight
-
-        # Build phrase weights from relations with frequency penalty and averaging
-        phrase_weights: Dict[str, float] = {}
-        if triplet_recall["relations"]:
-            occurrence_counts: Dict[str, int] = {}
-            # Accumulate inverse-rank weights to both source and target entities
-            for rank, rel in enumerate(query_triplets):
-                base_w = 1.0 / (rank + 1)
-                for ent_id in [rel.get("source"), rel.get("target")]:
-                    if not ent_id:
-                        continue
-                    phrase_weights[ent_id] = phrase_weights.get(ent_id, 0.0) + base_w
-                    occurrence_counts[ent_id] = occurrence_counts.get(ent_id, 0) + 1
-
-            async def _fetch_entity_chunk_count(ent: str) -> int:
-                try:
-                    node = await self.storage.gdb.query_node(ent)
-                    chunk_ids = (
-                        node.metadata.get("chunk_ids", [])
-                        if hasattr(node, "metadata")
-                        else []
-                    )
-                    return len(chunk_ids) if isinstance(chunk_ids, list) else 0
-                except Exception:
-                    return 0
-
-            counts = await asyncio.gather(
-                *[_fetch_entity_chunk_count(eid) for eid in query_entity_ids]
-            )
-            ent_to_chunk_count = {
-                eid: cnt for eid, cnt in zip(query_entity_ids, counts)
-            }
-
-            for ent_id in query_entity_ids:
-                freq_penalty = ent_to_chunk_count.get(ent_id, 0)
-                denom = (
-                    float(freq_penalty) if freq_penalty and freq_penalty > 0 else 1.0
-                )
-                phrase_weights[ent_id] = (phrase_weights[ent_id] / denom) / float(
-                    occurrence_counts.get(ent_id, 1)
-                )
-
-            # Keep only top link_top_k entities
-            sorted_entities = sorted(
-                phrase_weights.items(), key=lambda x: x[1], reverse=True
-            )[: max(1, link_top_k)]
-            phrase_weights = dict(sorted_entities)
-
-        # If no fact signal, return DPR order directly
-        if not phrase_weights:
-            return {
-                "pagerank": [],
-                "query_top": query_chunks,
-            }
-
-        # Combine phrase and passage weights
-        reset_weights: Dict[str, float] = {}
-        for k, v in passage_weights.items():
-            if v > 0:
-                reset_weights[k] = reset_weights.get(k, 0.0) + v
-        for k, v in phrase_weights.items():
-            if v > 0:
-                reset_weights[k] = reset_weights.get(k, 0.0) + v
-
-        # Personalized PageRank over graph using reset vector
-        pr_ranked = await self.storage.gdb.pagerank_top_chunks_with_reset(
-            reset_weights=reset_weights,
-            topk=topk,
-            alpha=damping,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-        )
-        pr_ids = [cid for cid, _ in pr_ranked]
-
-        pr_rows = await self.get_chunks_by_ids(
-            pr_ids, workspace_id=workspace_id, knowledge_base_id=knowledge_base_id
-        )
-        pr_score_map = {cid: score for cid, score in pr_ranked}
-        for row in pr_rows:
-            row["pagerank_score"] = pr_score_map.get(row.get("documentKey"), 0.0)
-
-        return {
-            "pagerank": pr_rows,
-            "query_top": query_chunks,
-        }
-
-    async def query(
-        self,
-        workspace_id: str,
-        knowledge_base_id: str,
-        query: str,
-    ) -> Dict[str, Any]:
-        """Query Strategy (default: dual_recall_with_pagerank)"""
-        result = await self.dual_recall_with_pagerank(
-            query=query,
-            topk=DEFAULT_QUERY_TOPK,
-            topn=DEFAULT_QUERY_TOPN,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-        )
-        result["chunks"] = (
-            result.get("pagerank")
-            if result.get("pagerank")
-            else result.get("query_top", [])
-        )
-        return result
-
-
-# ============================================================================
 # Main HiRAG class
 # ============================================================================
 
@@ -1104,15 +377,12 @@ class HiRAG:
     Simplified main interface, coordinating the work of all components
     """
 
-    config: HiRAGConfig = field(default_factory=HiRAGConfig)
-
     # Components (lazy initialization)
     _storage: Optional[StorageManager] = field(default=None, init=False)
     _processor: Optional[DocumentProcessor] = field(default=None, init=False)
     _query_service: Optional[QueryService] = field(default=None, init=False)
     _metrics: Optional[MetricsCollector] = field(default=None, init=False)
     _kg_constructor: Optional[VanillaKG] = field(default=None, init=False)
-    _language: str = field(default=SUPPORTED_LANGUAGES[0], init=False)
 
     # Services
     chat_service: Optional[Union[ChatCompletion, LocalChatService]] = field(
@@ -1125,51 +395,75 @@ class HiRAG:
     @classmethod
     async def create(
         cls,
-        config: Optional[HiRAGConfig] = None,
-        vdb_type: Optional[str] = "lancedb",
-        gdb_type: Optional[str] = "networkx",
-        vector_db_path: Optional[str] = None,
-        graph_db_path: Optional[str] = None,
+        config_dict: Optional[Dict] = None,
+        resource_dict: Optional[Dict] = None,
         **kwargs,
     ) -> "HiRAG":
         """Create HiRAG instance"""
-        config = config or HiRAGConfig()
-        config.vdb_type = vdb_type if vdb_type else DEFAULT_VDB_TYPE
-        config.gdb_type = gdb_type if gdb_type else DEFAULT_GDB_TYPE
-
-        # Override the default database paths if provided
-        config.vector_db_path = (
-            vector_db_path if vector_db_path else DEFAULT_VECTOR_DB_PATH
-        )
-        config.graph_db_path = graph_db_path if graph_db_path else DEFAULT_GRAPH_DB_PATH
-
-        instance = cls(config=config)
+        initialize_config_manager(config_dict)
+        await initialize_resource_manager(resource_dict)
+        instance = cls()
         await instance._initialize(**kwargs)
         return instance
 
     async def set_language(self, language: str) -> None:
         """Set the language for the HiRAG instance"""
-        if language not in SUPPORTED_LANGUAGES:
+        if language not in get_config_manager().supported_languages:
             raise ValueError(
-                f"Unsupported language: {language}. Supported languages: {SUPPORTED_LANGUAGES}"
+                f"Unsupported language: {language}. Supported languages: {get_config_manager().supported_languages}"
             )
 
-        self._language = language
-        self._kg_constructor.set_language(language)
+        get_config_manager().language = language
+        self._kg_constructor.update_language_config()
 
-        logger.info(f"Language set to {self._language}")
+        logger.info(f"Language set to {get_config_manager().language}")
 
     async def set_db_paths(self, vector_db_path: str, graph_db_path: str) -> None:
         """Set the database paths for the HiRAG instance"""
-        self.config.vector_db_path = vector_db_path
-        self.config.graph_db_path = graph_db_path
+        get_hi_rag_config().vector_db_path = vector_db_path
+        get_hi_rag_config().graph_db_path = graph_db_path
 
         # Reinitialize storage with new paths
         await self._reinitialize_storage()
 
         logger.info(
-            f"Database paths updated - VDB: {self.config.vector_db_path}, GDB: {self.config.graph_db_path}"
+            f"Database paths updated - VDB: {get_hi_rag_config().vector_db_path}, GDB: {get_hi_rag_config().graph_db_path}"
         )
+
+    async def _create_storage_manager(
+        self, vdb: Optional[BaseVDB] = None, gdb: Optional[BaseGDB] = None
+    ) -> None:
+        # Build VDB by type
+        if vdb is None:
+            if get_hi_rag_config().vdb_type == "lancedb":
+                vdb = await LanceDB.create(
+                    embedding_func=self.embedding_service.create_embeddings,
+                    db_url=get_hi_rag_config().vector_db_path,
+                    strategy_provider=RetrievalStrategyProvider(),
+                )
+            elif get_hi_rag_config().vdb_type == "pgvector":
+                vdb = PGVector.create(
+                    embedding_func=self.embedding_service.create_embeddings,
+                    strategy_provider=RetrievalStrategyProvider(),
+                    vector_type="halfvec",
+                )
+
+        # Build GDB by type
+        if gdb is None:
+            if get_hi_rag_config().gdb_type == "networkx":
+                gdb = NetworkXGDB.create(
+                    path=get_hi_rag_config().graph_db_path,
+                    llm_func=self.chat_service.complete,
+                )
+            elif get_hi_rag_config().gdb_type == "neo4j":
+                # Placeholder for future Neo4j adapter
+                raise HiRAGException("Neo4j GDB not implemented yet")
+
+        self._storage = StorageManager(
+            vdb,
+            gdb,
+        )
+        await self._storage.initialize()
 
     async def _reinitialize_storage(self) -> None:
         """Reinitialize storage components with current configuration"""
@@ -1178,43 +472,7 @@ class HiRAG:
                 "Services not initialized - cannot reinitialize storage"
             )
 
-        # Build VDB by type
-        if self.config.vdb_type == "lancedb":
-            vdb = await LanceDB.create(
-                embedding_func=self.embedding_service.create_embeddings,
-                db_url=self.config.vector_db_path,
-                strategy_provider=RetrievalStrategyProvider(),
-            )
-        elif self.config.vdb_type == "pgvector":
-            vdb = PGVector.create(
-                embedding_func=self.embedding_service.create_embeddings,
-                db_url=self.config.vector_db_path,
-                strategy_provider=RetrievalStrategyProvider(),
-                vector_type="halfvec",
-            )
-        else:
-            raise HiRAGException(f"Unsupported VDB type: {self.config.vdb_type}")
-
-        # Build GDB by type
-        if self.config.gdb_type == "networkx":
-            gdb = NetworkXGDB.create(
-                path=self.config.graph_db_path,
-                llm_func=self.chat_service.complete,
-            )
-        elif self.config.gdb_type == "neo4j":
-            # Placeholder for future Neo4j adapter
-            raise HiRAGException("Neo4j GDB not implemented yet")
-        else:
-            raise HiRAGException(f"Unsupported GDB type: {self.config.gdb_type}")
-
-        # Initialize new storage manager
-        self._storage = StorageManager(
-            vdb,
-            gdb,
-            self.config.embedding_dimension,
-            vdb_type=self.config.vdb_type,
-        )
-        await self._storage.initialize()
+        await self._create_storage_manager()
 
         # Update dependent components
         if self._processor:
@@ -1229,66 +487,26 @@ class HiRAG:
         # Initialize services
         self.chat_service = create_chat_service()
         self.embedding_service = create_embedding_service(
-            default_batch_size=self.config.embedding_batch_size
+            default_batch_size=get_hi_rag_config().embedding_batch_size
         )
 
-        # Initialize storage via factories
-        vdb = kwargs.get("vdb")
-        if vdb is None:
-            if self.config.vdb_type == "lancedb":
-                vdb = await LanceDB.create(
-                    embedding_func=self.embedding_service.create_embeddings,
-                    db_url=self.config.vector_db_path,
-                    strategy_provider=RetrievalStrategyProvider(),
-                )
-            elif self.config.vdb_type == "pgvector":
-                vdb = PGVector.create(
-                    embedding_func=self.embedding_service.create_embeddings,
-                    db_url=self.config.vector_db_path,
-                    strategy_provider=RetrievalStrategyProvider(),
-                    vector_type="halfvec",
-                )
-        else:
-            raise HiRAGException(f"Unsupported VDB type: {self.config.vdb_type}")
-
-        gdb = kwargs.get("gdb")
-        if gdb is None:
-            if self.config.gdb_type == "networkx":
-                gdb = NetworkXGDB.create(
-                    path=self.config.graph_db_path,
-                    llm_func=self.chat_service.complete,
-                )
-            elif self.config.gdb_type == "neo4j":
-                # Placeholder for future Neo4j adapter
-                raise HiRAGException("Neo4j GDB not implemented yet")
-        else:
-            raise HiRAGException(f"Unsupported GDB type: {self.config.gdb_type}")
-
-        self._storage = StorageManager(
-            vdb,
-            gdb,
-            self.config.embedding_dimension,
-            vdb_type=self.config.vdb_type,
-        )
-        await self._storage.initialize()
+        await self._create_storage_manager(kwargs.get("vdb"), kwargs.get("gdb"))
 
         # Initialize other components
         chunker = FixTokenChunk(
-            chunk_size=self.config.chunk_size, chunk_overlap=self.config.chunk_overlap
+            chunk_size=get_hi_rag_config().chunk_size,
+            chunk_overlap=get_hi_rag_config().chunk_overlap,
         )
 
         self._kg_constructor = VanillaKG.create(
             extract_func=self.chat_service.complete,
-            llm_model_name=self.config.llm_model_name,
-            language=self._language,
+            llm_model_name=get_hi_rag_config().llm_model_name,
         )
 
         # Initialize resume tracker
         resume_tracker = kwargs.get("resume_tracker")
         if resume_tracker is None:
-            resume_tracker = ResumeTracker(
-                redis_url=self.config.redis_url, key_prefix=self.config.redis_key_prefix
-            )
+            resume_tracker = ResumeTracker()
             logger.info("Using Redis-based resume tracker")
 
         # Initialize components
@@ -1298,7 +516,6 @@ class HiRAG:
             chunker=chunker,
             kg_constructor=self._kg_constructor,
             resume_tracker=resume_tracker,
-            config=self.config,
             metrics=self._metrics,
         )
         self._query_service = QueryService(self._storage)
@@ -1417,7 +634,7 @@ class HiRAG:
         start_time = time.perf_counter()
 
         try:
-            prompt = PROMPTS["summary_all_" + self._language]
+            prompt = PROMPTS["summary_all_" + get_config_manager().language]
 
             placeholder = PROMPTS["REFERENCE_PLACEHOLDER"]
 
@@ -1433,9 +650,9 @@ class HiRAG:
             try:
                 summary = await self.chat_complete(
                     prompt=prompt,
-                    max_tokens=self.config.llm_max_tokens,
-                    timeout=self.config.llm_timeout,
-                    model=self.config.llm_model_name,
+                    max_tokens=get_hi_rag_config().llm_max_tokens,
+                    timeout=get_hi_rag_config().llm_timeout,
+                    model=get_hi_rag_config().llm_model_name,
                 )
             except Exception as e:
                 logger.error(f"Summary generation failed: {e}")
@@ -1498,8 +715,10 @@ class HiRAG:
                     result.append("")
                     continue
 
-                reference_threshold = DEFAULT_SIMILARITY_THRESHOLD
-                max_similarity_difference = DEFAULT_SIMILARITY_MAX_DIFFERENCE
+                reference_threshold = get_hi_rag_config().similarity_threshold
+                max_similarity_difference = (
+                    get_hi_rag_config().similarity_max_difference
+                )
 
                 # If we have a most similar reference, only accept others with similarity having this difference or less
                 most_similar = reference_list[0]
@@ -1516,8 +735,10 @@ class HiRAG:
                     if ref["similarity"] >= reference_threshold
                 ]
 
-                # Limit the number of references to DEFAULT_MAX_REFERENCES
-                filtered_references = filtered_references[:DEFAULT_MAX_REFERENCES]
+                # Limit the number of references to max references in HiRAGConfig
+                filtered_references = filtered_references[
+                    : get_hi_rag_config().max_references
+                ]
 
                 # If no references found, append empty string
                 if not filtered_references:
@@ -1662,25 +883,12 @@ class HiRAG:
                     pass
             raise
 
-    async def query_chunks(
-        self,
-        query: str,
-        workspace_id: str,
-        knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
-        topn: int = DEFAULT_QUERY_TOPN,
-    ) -> List[Dict[str, Any]]:
+    async def query_chunks(self, *args, **kwargs) -> List[Dict[str, Any]]:
         """Query document chunks"""
         if not self._query_service:
             raise HiRAGException("HiRAG instance not properly initialized")
 
-        return await self._query_service.query_chunks(
-            query,
-            workspace_id=workspace_id,
-            knowledge_base_id=knowledge_base_id,
-            topk=topk,
-            topn=topn,
-        )
+        return await self._query_service.query_chunks(*args, **kwargs)
 
     async def query(
         self,
@@ -1792,7 +1000,7 @@ class HiRAG:
         query: str,
         workspace_id: str,
         knowledge_base_id: str,
-        topk: int = DEFAULT_QUERY_TOPK,
+        topk: int = get_hi_rag_config().default_query_top_k,
         pool_size: int = 500,
     ) -> Dict[str, Any]:
         """Dense Passage Retrieval-style recall using current embeddings and stored vectors.

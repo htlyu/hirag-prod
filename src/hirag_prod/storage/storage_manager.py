@@ -1,0 +1,197 @@
+import logging
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import select
+
+from hirag_prod._utils import retry_async
+from hirag_prod.configs.functions import get_hi_rag_config
+from hirag_prod.exceptions import StorageError
+from hirag_prod.resources.functions import get_resource_manager
+from hirag_prod.schema import (
+    Chunk,
+    File,
+    Relation,
+)
+from hirag_prod.storage import (
+    BaseGDB,
+    BaseVDB,
+    LanceDB,
+)
+from hirag_prod.storage.pgvector import PGVector
+
+logger = logging.getLogger("HiRAG")
+
+
+class StorageManager:
+    """Unified manager for vector database and graph database operations."""
+
+    def __init__(
+        self,
+        vdb: BaseVDB,
+        gdb: BaseGDB,
+    ):
+        self.vdb = vdb
+        self.gdb = gdb
+        self.files_table = None
+
+    async def initialize(self) -> None:
+        """Initialize storage tables"""
+        try:
+            await self.vdb._init_vdb(
+                embedding_dimension=get_hi_rag_config().embedding_dimension
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to initialize VDB: {e}")
+
+    @retry_async()
+    async def upsert_chunks_to_vdb(self, chunks: List[Chunk]) -> None:
+        if not chunks:
+            return
+        texts_to_embed = [c.text for c in chunks]
+        await self.vdb.upsert_texts(
+            texts_to_embed=texts_to_embed,
+            properties_list=chunks,
+            table_name="Chunks",
+            mode="append",
+        )
+
+    @retry_async()
+    async def upsert_file_to_vdb(self, file: File) -> None:
+        if not file:
+            return
+        await self.vdb.upsert_file(
+            file=file,
+            mode="append",
+        )
+
+    @retry_async()
+    async def upsert_relations_to_vdb(self, relations: List[Relation]) -> None:
+        if not relations:
+            return
+        filtered = [r for r in relations if not r.source.startswith("chunk-")]
+        if not filtered:
+            return
+        texts_to_embed = [r.properties.get("description", "") for r in filtered]
+        properties_list = [
+            {
+                "source": r.source,
+                "target": r.target,
+                "description": r.properties.get("description", ""),
+                "fileName": r.properties.get("file_name", ""),
+                "knowledgeBaseId": r.properties.get("knowledge_base_id", ""),
+                "workspaceId": r.properties.get("workspace_id", ""),
+            }
+            for r in filtered
+        ]
+        await self.vdb.upsert_texts(
+            texts_to_embed=texts_to_embed,
+            properties_list=properties_list,
+            table_name="Triplets",
+            mode="append",
+        )
+
+    async def get_existing_chunks(
+        self, uri: str, workspace_id: str, knowledge_base_id: str
+    ) -> List[str]:
+        try:
+            return await self.vdb.get_existing_document_keys(
+                uri=uri,
+                workspace_id=workspace_id,
+                knowledge_base_id=knowledge_base_id,
+                table_name="Chunks",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get existing chunks: {e}")
+            return []
+
+    async def query_chunks(
+        self,
+        query: str,
+        workspace_id: str,
+        knowledge_base_id: str,
+        rerank: bool,
+        topk: int = get_hi_rag_config().default_query_top_k,
+        topn: int = get_hi_rag_config().default_query_top_n,
+    ) -> List[Dict[str, Any]]:
+        rows = await self.vdb.query(
+            query=query,
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            table_name="Chunks",
+            topk=topk,
+            topn=topn,
+            columns_to_select=[
+                "text",
+                "uri",
+                "fileName",
+                "private",
+                "updatedAt",
+                "documentKey",
+            ],
+            rerank=rerank,
+        )
+        return rows
+
+    async def query_triplets(
+        self,
+        query: str,
+        workspace_id: str,
+        knowledge_base_id: str,
+        rerank: bool,
+        topk: int = get_hi_rag_config().default_query_top_k,
+        topn: int = get_hi_rag_config().default_query_top_n,
+    ) -> List[Dict[str, Any]]:
+        rows = await self.vdb.query(
+            query=query,
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            table_name="Triplets",
+            topk=topk,
+            topn=topn,
+            columns_to_select=["source", "target", "description", "fileName"],
+            rerank=rerank,
+        )
+        return rows
+
+    async def query_by_keys(
+        self,
+        chunk_ids: List[str],
+        workspace_id: str,
+        knowledge_base_id: str,
+        columns_to_select: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        rows = await self.vdb.query_by_keys(
+            key_value=chunk_ids,
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            table_name="Chunks",
+            key_column="documentKey",
+            columns_to_select=columns_to_select or ["documentKey", "vector"],
+        )
+        return rows
+
+    # ------------------------------ Health/Cleanup ------------------------------
+    async def health_check(self) -> Dict[str, bool]:
+        health: Dict[str, bool] = {}
+        try:
+            if isinstance(self.vdb, LanceDB):
+                await self.vdb.db.table_names()
+            elif isinstance(self.vdb, PGVector):
+                async with get_resource_manager().get_session_maker()() as s:
+                    await s.execute(select(1))
+            health["vdb"] = True
+        except Exception:
+            health["vdb"] = False
+
+        try:
+            await self.gdb.health_check() if hasattr(self.gdb, "health_check") else None
+            health["gdb"] = True
+        except Exception:
+            health["gdb"] = False
+        return health
+
+    async def cleanup(self) -> None:
+        try:
+            await self.gdb.clean_up()
+        except Exception as e:
+            logger.warning(f"Cleanup failed: {e}")

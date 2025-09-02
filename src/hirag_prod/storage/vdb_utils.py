@@ -459,7 +459,6 @@ async def get_chunk_info_by_scope(
         try:
             vdb = PGVector.create(
                 embedding_func=None,
-                db_url=vdb_path,
                 strategy_provider=RetrievalStrategyProvider(),
                 vector_type="halfvec",
             )
@@ -472,7 +471,6 @@ async def get_chunk_info_by_scope(
                 columns_to_select=None,
                 limit=None,
             )
-            await vdb.clean_up()
             return results
         except Exception as e:
             logger.error(

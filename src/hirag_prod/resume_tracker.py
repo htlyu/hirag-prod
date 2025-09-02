@@ -1,26 +1,14 @@
 import hashlib
 import logging
-import os
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional
 
-import redis
-from sqlmodel.ext.asyncio.session import AsyncSession
-
-from hirag_prod.storage.pg_utils import DatabaseClient
+from hirag_prod.configs.functions import get_envs
+from hirag_prod.resources.functions import get_db_session_maker, get_resource_manager
+from hirag_prod.storage.pg_utils import update_job_status
 
 logger = logging.getLogger(__name__)
-
-REDIS_EXPIRE_TTL = os.getenv("REDIS_EXPIRE_TTL", 3600 * 24)  # 1 day by default
-
-try:
-    EXPIRE_TTL = int(REDIS_EXPIRE_TTL)
-except ValueError:
-    logger.warning(
-        f"Invalid REDIS_EXPIRE_TTL value: {REDIS_EXPIRE_TTL}, using default 1 day"
-    )
-    EXPIRE_TTL = 3600 * 24
 
 
 class JobStatus(Enum):
@@ -45,13 +33,12 @@ class ResumeTracker:
 
     def __init__(
         self,
-        redis_url: str,
-        key_prefix: str,
         auto_cleanup: bool = True,
     ):
         """Initialize the resume tracker with Redis backend"""
-        self.redis_client = redis.from_url(redis_url, decode_responses=True)
-        self.key_prefix = key_prefix
+        self.redis_client = get_resource_manager().get_redis_client(
+            decode_responses=True
+        )
         self.auto_cleanup = auto_cleanup
 
         # Test connection
@@ -65,7 +52,7 @@ class ResumeTracker:
     # ============================== Helper Functions ==============================
 
     def _scope_prefix(self, workspace_id: str, knowledge_base_id: str) -> str:
-        return f"{self.key_prefix}:ws:{workspace_id}:kb:{knowledge_base_id}"
+        return f"{get_envs().REDIS_KEY_PREFIX}:ws:{workspace_id}:kb:{knowledge_base_id}"
 
     def _chunk_key(
         self, chunk_id: str, workspace_id: str, knowledge_base_id: str
@@ -88,7 +75,7 @@ class ResumeTracker:
         return f"{self._scope_prefix(workspace_id, knowledge_base_id)}:completed:{document_id}"
 
     def _job_key(self, job_id: str) -> str:
-        return f"{self.key_prefix}:job:{job_id}"
+        return f"{get_envs().REDIS_KEY_PREFIX}:job:{job_id}"
 
     def _calculate_chunk_hash(
         self, chunk_content: str, workspace_id: str, knowledge_base_id: str
@@ -143,31 +130,27 @@ class ResumeTracker:
             "updated_at": now,
         }
         self.redis_client.hset(key, mapping=mapping)
-        self.redis_client.expire(key, EXPIRE_TTL)
+        self.redis_client.expire(key, get_envs().REDIS_EXPIRE_TTL)
 
     async def _persist_job_status(
         self, job_id: str, status: str, extra: Optional[Dict[str, str]] = None
     ) -> None:
         """Hook to persist job status into PostgreSQL. No-op by default."""
         try:
-            await self.save_job_status_to_postgres(job_id, status, extra or {})
+            await self.save_job_status_to_postgres(job_id, status)
         except Exception:
             pass
 
-    async def save_job_status_to_postgres(
-        self, job_id: str, status: str, extra: Dict[str, str]
-    ) -> None:
-        """Persist job status to PostgreSQL using DatabaseClient."""
+    async def save_job_status_to_postgres(self, job_id: str, status: str) -> None:
+        """Persist job status to PostgreSQL."""
         try:
-            db_client = DatabaseClient()
-            engine = db_client.create_db_engine(db_client.connection_string)
-            session = AsyncSession(engine)
             normalized_status = status or ""
             if normalized_status.lower() == "progress":
                 normalized_status = JobStatus.PROCESSING.value
-            await db_client.update_job_status(
-                session, job_id, normalized_status, updated_at=datetime.now()
-            )
+            async with get_db_session_maker()() as session:
+                await update_job_status(
+                    session, job_id, normalized_status, updated_at=datetime.now()
+                )
         except Exception:
             pass
 
@@ -184,7 +167,7 @@ class ResumeTracker:
         )
         now = datetime.now().isoformat()
         mapping = {"status": status.value, "updated_at": now}
-        self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.hset(key, mapping=mapping)
         await self._persist_job_status(job_id, status.value, mapping)
 
     async def set_job_processing(
@@ -202,7 +185,7 @@ class ResumeTracker:
             mapping["document_id"] = document_id
         if total_chunks is not None:
             mapping["total_chunks"] = str(int(total_chunks))
-        self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.hset(key, mapping=mapping)
         await self._persist_job_status(job_id, JobStatus.PROCESSING.value, mapping)
 
     async def set_job_progress(
@@ -223,7 +206,7 @@ class ResumeTracker:
             mapping["total_entities"] = str(int(total_entities))
         if total_relations is not None:
             mapping["total_relations"] = str(int(total_relations))
-        self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.hset(key, mapping=mapping)
         await self._persist_job_status(job_id, "progress", mapping)
 
     async def set_job_completed(self, job_id: str) -> None:
@@ -233,7 +216,7 @@ class ResumeTracker:
         key = self._job_key(job_id)
         self._ensure_job_exists(job_id)
         now = datetime.now().isoformat()
-        self.redis_client.hset(
+        await self.redis_client.hset(
             key,
             mapping={
                 "status": JobStatus.FAILED.value,
@@ -309,10 +292,10 @@ class ResumeTracker:
             }
             pipeline.hset(chunk_key, mapping=chunk_data)
             pipeline.sadd(doc_chunks_key, chunk.documentKey)
-            pipeline.expire(chunk_key, EXPIRE_TTL)
+            pipeline.expire(chunk_key, get_envs().REDIS_EXPIRE_TTL)
 
-        pipeline.expire(doc_info_key, EXPIRE_TTL)
-        pipeline.expire(doc_chunks_key, EXPIRE_TTL)
+        pipeline.expire(doc_info_key, get_envs().REDIS_EXPIRE_TTL)
+        pipeline.expire(doc_chunks_key, get_envs().REDIS_EXPIRE_TTL)
         pipeline.execute()
 
         logger.info(
@@ -343,7 +326,7 @@ class ResumeTracker:
             "knowledge_base_id": (knowledge_base_id or ""),
         }
         self.redis_client.hset(completion_key, mapping=completion_data)
-        self.redis_client.expire(completion_key, EXPIRE_TTL)
+        self.redis_client.expire(completion_key, get_envs().REDIS_EXPIRE_TTL)
 
         # Update doc session status (if exists)
         doc_info_key = self._doc_info_key(document_id, workspace_id, knowledge_base_id)
