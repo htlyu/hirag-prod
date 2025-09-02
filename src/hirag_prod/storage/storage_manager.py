@@ -109,7 +109,7 @@ class StorageManager:
         query: str,
         workspace_id: str,
         knowledge_base_id: str,
-        rerank: bool,
+        rerank: bool = False,
         topk: int = get_hi_rag_config().default_query_top_k,
         topn: int = get_hi_rag_config().default_query_top_n,
     ) -> List[Dict[str, Any]]:
@@ -137,7 +137,7 @@ class StorageManager:
         query: str,
         workspace_id: str,
         knowledge_base_id: str,
-        rerank: bool,
+        rerank: bool = False,
         topk: int = get_hi_rag_config().default_query_top_k,
         topn: int = get_hi_rag_config().default_query_top_n,
     ) -> List[Dict[str, Any]]:

@@ -147,7 +147,7 @@ class DocumentProcessor:
                         )
                     except Exception:
                         pass
-                if self.resume_tracker.is_document_already_completed(
+                if await self.resume_tracker.is_document_already_completed(
                     document_id, workspace_id, knowledge_base_id
                 ):
                     logger.info(
@@ -161,7 +161,7 @@ class DocumentProcessor:
                     return self.metrics.metrics
                 else:
                     document_uri = chunks[0].uri
-                    self.resume_tracker.register_chunks(
+                    await self.resume_tracker.register_chunks(
                         chunks,
                         document_id,
                         document_uri,
@@ -200,7 +200,7 @@ class DocumentProcessor:
 
             # Mark as complete
             if self.resume_tracker:
-                self.resume_tracker.mark_document_completed(
+                await self.resume_tracker.mark_document_completed(
                     document_id=chunks[0].documentId,
                     workspace_id=workspace_id,
                     knowledge_base_id=knowledge_base_id,

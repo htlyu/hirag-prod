@@ -1,7 +1,6 @@
 # This is a quickstart script for the HiRAG system.
 import asyncio
 import logging
-import os
 
 from hirag_prod import HiRAG
 
@@ -9,11 +8,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 
-load_dotenv("/chatbot/.env", override=True)
-
-# Default Database Configuration
-VECTOR_DB_PATH = os.getenv("POSTGRES_URL_NO_SSL_DEV")
-GRAPH_DB_PATH = "kb/hirag.gpickle"
+load_dotenv(".env", override=True)
 
 
 def get_test(id: str):
@@ -55,9 +50,7 @@ def get_test(id: str):
 
 
 async def index():
-    index = await HiRAG.create(
-        vector_db_path=VECTOR_DB_PATH, graph_db_path=GRAPH_DB_PATH, vdb_type="pgvector"
-    )
+    index = await HiRAG.create()
 
     await index.set_language("en")  # en | cn
 
