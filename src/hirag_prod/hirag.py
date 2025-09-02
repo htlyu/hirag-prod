@@ -32,9 +32,10 @@ from hirag_prod.exceptions import (
 )
 from hirag_prod.loader import load_document
 from hirag_prod.loader.chunk_split import (
+    build_rich_toc,
     chunk_docling_document,
     chunk_dots_document,
-    chunk_langchain_document, build_rich_toc,
+    chunk_langchain_document,
 )
 from hirag_prod.metrics import MetricsCollector, ProcessingMetrics
 from hirag_prod.parser import (
