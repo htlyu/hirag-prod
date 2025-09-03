@@ -8,11 +8,11 @@ from redis.asyncio import ConnectionPool, Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from src.hirag_prod.configs.functions import (
+from hirag_prod.configs.functions import (
     get_config_manager,
     get_envs,
 )
-from src.hirag_prod.resources.functions import timing_logger
+from hirag_prod.resources.functions import timing_logger
 
 
 class ResourceManager:

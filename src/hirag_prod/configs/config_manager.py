@@ -22,7 +22,7 @@ class ConfigManager:
         if getattr(self, "_created", False):
             return
 
-        self.envs: Envs = Envs(config_dict)
+        self.envs: Envs = Envs(**config_dict if config_dict else {})
         self.hi_rag_config = HiRAGConfig(**self.envs.model_dump())
         self.embedding_config: EmbeddingConfig = EmbeddingConfig(
             **self.envs.model_dump()

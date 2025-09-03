@@ -1,4 +1,4 @@
-from typing import Dict, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
@@ -93,8 +93,5 @@ class Envs(BaseSettings):
                 )
         return self
 
-    def __init__(self, values: Optional[Dict]):
-        if values:
-            super().__init__(**values)
-        else:
-            super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
