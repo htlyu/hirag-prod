@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Redis Storage Management Utilities"""
-
+import asyncio
 import json
 import logging
 import os
@@ -12,6 +12,13 @@ from typing import Dict, List, Optional, Set, Union
 
 import redis
 from dotenv import load_dotenv
+
+from hirag_prod.configs.functions import get_envs, initialize_config_manager
+from hirag_prod.resources.functions import (
+    get_redis,
+    get_resource_manager,
+    initialize_resource_manager,
+)
 
 # Load environment variables
 load_dotenv("/chatbot/.env")
@@ -87,36 +94,16 @@ class RedisStorageManager:
     - Export and reporting capabilities
     """
 
-    def __init__(
-        self, redis_url: str = DEFAULT_REDIS_URL, key_prefix: str = DEFAULT_KEY_PREFIX
-    ):
-        """
-        Initialize Redis storage manager.
-
-        Args:
-            redis_url: Redis connection URL
-            key_prefix: Key prefix for all Redis operations
-        """
-        self.redis_url = redis_url
-        self.key_prefix = key_prefix
+    def __init__(self):
+        """Initialize Redis storage manager."""
         self._client = None
 
     @property
     def client(self) -> redis.Redis:
         """Lazy-loaded Redis client with connection pooling"""
         if self._client is None:
-            self._client = redis.from_url(self.redis_url, decode_responses=True)
-            self._verify_connection()
+            self._client = get_redis()
         return self._client
-
-    def _verify_connection(self) -> None:
-        """Verify Redis connection is working"""
-        try:
-            self.client.ping()
-            logger.info(f"Connected to Redis: {self.redis_url}")
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
-            raise ConnectionError(f"Redis connection failed: {e}")
 
     @contextmanager
     def _pipeline(self):
@@ -134,7 +121,7 @@ class RedisStorageManager:
         doc_ids = set()
 
         # Extract from document info keys
-        info_pattern = f"{self.key_prefix}:*doc:*:info"
+        info_pattern = f"{get_envs().REDIS_KEY_PREFIX}:*doc:*:info"
         for key in self.client.keys(info_pattern):
             parts = key.split(":")
             # find 'doc' and take the next token
@@ -146,7 +133,7 @@ class RedisStorageManager:
                     continue
 
         # Extract from completion keys
-        completion_pattern = f"{self.key_prefix}:*completed:*"
+        completion_pattern = f"{get_envs().REDIS_KEY_PREFIX}:*completed:*"
         for key in self.client.keys(completion_pattern):
             parts = key.split(":")
             if "completed" in parts:
@@ -176,7 +163,7 @@ class RedisStorageManager:
 
         # Check completion status
         completion_keys = self.client.keys(
-            f"{self.key_prefix}:*completed:{document_id}"
+            f"{get_envs().REDIS_KEY_PREFIX}:*completed:{document_id}"
         )
         if completion_keys:
             completion_data = self.client.hgetall(completion_keys[0])
@@ -187,7 +174,9 @@ class RedisStorageManager:
                 status.completion_info = completion_data
 
         # Check active session status
-        doc_info_keys = self.client.keys(f"{self.key_prefix}:*doc:{document_id}:info")
+        doc_info_keys = self.client.keys(
+            f"{get_envs().REDIS_KEY_PREFIX}:*doc:{document_id}:info"
+        )
         if doc_info_keys:
             session_data = self.client.hgetall(doc_info_keys[0])
             if session_data:
@@ -197,10 +186,10 @@ class RedisStorageManager:
 
                 # Get completion counts
                 entity_keys = self.client.keys(
-                    f"{self.key_prefix}:*doc:{document_id}:entity_completed"
+                    f"{get_envs().REDIS_KEY_PREFIX}:*doc:{document_id}:entity_completed"
                 )
                 relation_keys = self.client.keys(
-                    f"{self.key_prefix}:*doc:{document_id}:relation_completed"
+                    f"{get_envs().REDIS_KEY_PREFIX}:*doc:{document_id}:relation_completed"
                 )
 
                 if entity_keys:
@@ -278,8 +267,8 @@ class RedisStorageManager:
 
         # Collect document-related keys
         patterns = [
-            f"{self.key_prefix}:*doc:{document_id}:*",
-            f"{self.key_prefix}:*completed:{document_id}",
+            f"{get_envs().REDIS_KEY_PREFIX}:*doc:{document_id}:*",
+            f"{get_envs().REDIS_KEY_PREFIX}:*completed:{document_id}",
         ]
 
         for pattern in patterns:
@@ -287,13 +276,15 @@ class RedisStorageManager:
 
         # Collect chunk keys
         doc_chunks_keys = self.client.keys(
-            f"{self.key_prefix}:*doc:{document_id}:chunks"
+            f"{get_envs().REDIS_KEY_PREFIX}:*doc:{document_id}:chunks"
         )
         if doc_chunks_keys:
             chunk_ids = self.client.smembers(doc_chunks_keys[0])
             for chunk_id in chunk_ids:
                 # delete all scoped chunk keys
-                chunk_keys = self.client.keys(f"{self.key_prefix}:*chunk:{chunk_id}")
+                chunk_keys = self.client.keys(
+                    f"{get_envs().REDIS_KEY_PREFIX}:*chunk:{chunk_id}"
+                )
                 keys_to_delete.extend(chunk_keys)
 
         # Delete all collected keys
@@ -323,18 +314,20 @@ class RedisStorageManager:
             if status.completed and status.active_session:
                 # Keep completion record, clean session data
                 session_keys = [
-                    f"{self.key_prefix}:doc:{doc_id}:info",
-                    f"{self.key_prefix}:doc:{doc_id}:chunks",
-                    f"{self.key_prefix}:doc:{doc_id}:entity_completed",
-                    f"{self.key_prefix}:doc:{doc_id}:relation_completed",
+                    f"{get_envs().REDIS_KEY_PREFIX}:doc:{doc_id}:info",
+                    f"{get_envs().REDIS_KEY_PREFIX}:doc:{doc_id}:chunks",
+                    f"{get_envs().REDIS_KEY_PREFIX}:doc:{doc_id}:entity_completed",
+                    f"{get_envs().REDIS_KEY_PREFIX}:doc:{doc_id}:relation_completed",
                 ]
 
                 # Delete chunk keys
-                doc_chunks_key = f"{self.key_prefix}:doc:{doc_id}:chunks"
+                doc_chunks_key = f"{get_envs().REDIS_KEY_PREFIX}:doc:{doc_id}:chunks"
                 if self.client.exists(doc_chunks_key):
                     chunk_ids = self.client.smembers(doc_chunks_key)
                     for chunk_id in chunk_ids:
-                        session_keys.append(f"{self.key_prefix}:chunk:{chunk_id}")
+                        session_keys.append(
+                            f"{get_envs().REDIS_KEY_PREFIX}:chunk:{chunk_id}"
+                        )
 
                 if session_keys:
                     self.client.delete(*session_keys)
@@ -359,8 +352,7 @@ class RedisStorageManager:
 
         export_data = {
             "timestamp": datetime.now().isoformat(),
-            "redis_url": self.redis_url,
-            "key_prefix": self.key_prefix,
+            "key_prefix": get_envs().REDIS_KEY_PREFIX,
             "total_documents": len(doc_ids),
             "documents": {},
         }
@@ -393,7 +385,7 @@ class RedisStorageManager:
         try:
             info = self.client.info()
             total_keys = self.client.dbsize()
-            hirag_keys = len(self.client.keys(f"{self.key_prefix}:*"))
+            hirag_keys = len(self.client.keys(f"{get_envs().REDIS_KEY_PREFIX}:*"))
 
             return {
                 "redis_version": info.get("redis_version"),
@@ -408,7 +400,7 @@ class RedisStorageManager:
             return {"error": str(e)}
 
 
-def main():
+async def main():
     """Command-line interface for Redis storage management"""
     import sys
 
@@ -427,6 +419,9 @@ def main():
         print("  REDIS_URL               - Redis connection URL")
         print("  REDIS_KEY_PREFIX        - Key prefix for tracking")
         return
+
+    initialize_config_manager()
+    await initialize_resource_manager()
 
     # Initialize storage manager
     manager = RedisStorageManager()
@@ -473,7 +468,9 @@ def main():
     except Exception as e:
         logger.error(f"Command failed: {e}")
         print(f"❌ Error: {e}")
+    finally:
+        await get_resource_manager().cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

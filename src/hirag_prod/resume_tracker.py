@@ -1,26 +1,14 @@
 import hashlib
 import logging
-import os
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional
 
-import redis
-from sqlmodel.ext.asyncio.session import AsyncSession
-
-from hirag_prod.storage.pg_utils import DatabaseClient
+from hirag_prod.configs.functions import get_envs
+from hirag_prod.resources.functions import get_db_session_maker, get_resource_manager
+from hirag_prod.storage.pg_utils import update_job_status
 
 logger = logging.getLogger(__name__)
-
-REDIS_EXPIRE_TTL = os.getenv("REDIS_EXPIRE_TTL", 3600 * 24)  # 1 day by default
-
-try:
-    EXPIRE_TTL = int(REDIS_EXPIRE_TTL)
-except ValueError:
-    logger.warning(
-        f"Invalid REDIS_EXPIRE_TTL value: {REDIS_EXPIRE_TTL}, using default 1 day"
-    )
-    EXPIRE_TTL = 3600 * 24
 
 
 class JobStatus(Enum):
@@ -45,27 +33,18 @@ class ResumeTracker:
 
     def __init__(
         self,
-        redis_url: str,
-        key_prefix: str,
         auto_cleanup: bool = True,
     ):
         """Initialize the resume tracker with Redis backend"""
-        self.redis_client = redis.from_url(redis_url, decode_responses=True)
-        self.key_prefix = key_prefix
+        self.redis_client = get_resource_manager().get_redis_client(
+            decode_responses=True
+        )
         self.auto_cleanup = auto_cleanup
-
-        # Test connection
-        try:
-            self.redis_client.ping()
-            logger.info("Connected to Redis successfully")
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
-            raise
 
     # ============================== Helper Functions ==============================
 
     def _scope_prefix(self, workspace_id: str, knowledge_base_id: str) -> str:
-        return f"{self.key_prefix}:ws:{workspace_id}:kb:{knowledge_base_id}"
+        return f"{get_envs().REDIS_KEY_PREFIX}:ws:{workspace_id}:kb:{knowledge_base_id}"
 
     def _chunk_key(
         self, chunk_id: str, workspace_id: str, knowledge_base_id: str
@@ -88,7 +67,7 @@ class ResumeTracker:
         return f"{self._scope_prefix(workspace_id, knowledge_base_id)}:completed:{document_id}"
 
     def _job_key(self, job_id: str) -> str:
-        return f"{self.key_prefix}:job:{job_id}"
+        return f"{get_envs().REDIS_KEY_PREFIX}:job:{job_id}"
 
     def _calculate_chunk_hash(
         self, chunk_content: str, workspace_id: str, knowledge_base_id: str
@@ -98,14 +77,14 @@ class ResumeTracker:
             f"{chunk_content}:{workspace_id}:{knowledge_base_id}".encode()
         ).hexdigest()
 
-    def is_document_already_completed(
+    async def is_document_already_completed(
         self, document_id: str, workspace_id: str, knowledge_base_id: str
     ) -> bool:
         """Check if document was already fully processed in a previous session"""
         completion_key = self._doc_completion_key(
             document_id, workspace_id, knowledge_base_id
         )
-        completion_data = self.redis_client.hgetall(completion_key)
+        completion_data = await self.redis_client.hgetall(completion_key)
         if not completion_data:
             return False
         is_completed = completion_data.get("pipeline_completed", "false") == "true"
@@ -117,7 +96,7 @@ class ResumeTracker:
 
     # ============================== Job tracking =============================
 
-    def _ensure_job_exists(
+    async def _ensure_job_exists(
         self,
         job_id: str,
         document_uri: Optional[str] = None,
@@ -125,7 +104,7 @@ class ResumeTracker:
     ) -> None:
         """Idempotently create a job hash if absent, defaulting to PENDING."""
         key = self._job_key(job_id)
-        if self.redis_client.exists(key):
+        if await self.redis_client.exists(key):
             return
         now = datetime.now().isoformat()
         mapping = {
@@ -142,32 +121,28 @@ class ResumeTracker:
             "created_at": now,
             "updated_at": now,
         }
-        self.redis_client.hset(key, mapping=mapping)
-        self.redis_client.expire(key, EXPIRE_TTL)
+        await self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.expire(key, get_envs().REDIS_EXPIRE_TTL)
 
     async def _persist_job_status(
         self, job_id: str, status: str, extra: Optional[Dict[str, str]] = None
     ) -> None:
         """Hook to persist job status into PostgreSQL. No-op by default."""
         try:
-            await self.save_job_status_to_postgres(job_id, status, extra or {})
+            await self.save_job_status_to_postgres(job_id, status)
         except Exception:
             pass
 
-    async def save_job_status_to_postgres(
-        self, job_id: str, status: str, extra: Dict[str, str]
-    ) -> None:
-        """Persist job status to PostgreSQL using DatabaseClient."""
+    async def save_job_status_to_postgres(self, job_id: str, status: str) -> None:
+        """Persist job status to PostgreSQL."""
         try:
-            db_client = DatabaseClient()
-            engine = db_client.create_db_engine(db_client.connection_string)
-            session = AsyncSession(engine)
             normalized_status = status or ""
             if normalized_status.lower() == "progress":
                 normalized_status = JobStatus.PROCESSING.value
-            await db_client.update_job_status(
-                session, job_id, normalized_status, updated_at=datetime.now()
-            )
+            async with get_db_session_maker()() as session:
+                await update_job_status(
+                    session, job_id, normalized_status, updated_at=datetime.now()
+                )
         except Exception:
             pass
 
@@ -179,12 +154,12 @@ class ResumeTracker:
         with_graph: Optional[bool] = None,
     ) -> None:
         key = self._job_key(job_id)
-        self._ensure_job_exists(
+        await self._ensure_job_exists(
             job_id, document_uri=document_uri, with_graph=with_graph
         )
         now = datetime.now().isoformat()
         mapping = {"status": status.value, "updated_at": now}
-        self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.hset(key, mapping=mapping)
         await self._persist_job_status(job_id, status.value, mapping)
 
     async def set_job_processing(
@@ -195,14 +170,14 @@ class ResumeTracker:
     ) -> None:
         """Mark job as processing and optionally set document_id/total_chunks."""
         key = self._job_key(job_id)
-        self._ensure_job_exists(job_id)
+        await self._ensure_job_exists(job_id)
         now = datetime.now().isoformat()
         mapping = {"status": JobStatus.PROCESSING.value, "updated_at": now}
         if document_id is not None:
             mapping["document_id"] = document_id
         if total_chunks is not None:
             mapping["total_chunks"] = str(int(total_chunks))
-        self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.hset(key, mapping=mapping)
         await self._persist_job_status(job_id, JobStatus.PROCESSING.value, mapping)
 
     async def set_job_progress(
@@ -214,7 +189,7 @@ class ResumeTracker:
     ) -> None:
         """Lightweight progress updates stored on the job hash."""
         key = self._job_key(job_id)
-        self._ensure_job_exists(job_id)
+        await self._ensure_job_exists(job_id)
         now = datetime.now().isoformat()
         mapping: Dict[str, str] = {"updated_at": now}
         if processed_chunks is not None:
@@ -223,7 +198,7 @@ class ResumeTracker:
             mapping["total_entities"] = str(int(total_entities))
         if total_relations is not None:
             mapping["total_relations"] = str(int(total_relations))
-        self.redis_client.hset(key, mapping=mapping)
+        await self.redis_client.hset(key, mapping=mapping)
         await self._persist_job_status(job_id, "progress", mapping)
 
     async def set_job_completed(self, job_id: str) -> None:
@@ -231,9 +206,9 @@ class ResumeTracker:
 
     async def set_job_failed(self, job_id: str, error_message: str) -> None:
         key = self._job_key(job_id)
-        self._ensure_job_exists(job_id)
+        await self._ensure_job_exists(job_id)
         now = datetime.now().isoformat()
-        self.redis_client.hset(
+        await self.redis_client.hset(
             key,
             mapping={
                 "status": JobStatus.FAILED.value,
@@ -247,7 +222,7 @@ class ResumeTracker:
 
     # ============================ Chunk registration ==========================
 
-    def register_chunks(
+    async def register_chunks(
         self,
         chunks: List,
         document_id: str,
@@ -259,7 +234,7 @@ class ResumeTracker:
         if not chunks:
             return
 
-        if self.is_document_already_completed(
+        if await self.is_document_already_completed(
             document_id, workspace_id, knowledge_base_id
         ):
             logger.info(
@@ -272,7 +247,7 @@ class ResumeTracker:
 
         # If already registered this session, skip
         doc_info_key = self._doc_info_key(document_id, workspace_id, knowledge_base_id)
-        if self.redis_client.exists(doc_info_key):
+        if await self.redis_client.exists(doc_info_key):
             logger.debug(
                 f"Document {document_id} already registered in current session, skipping chunk registration"
             )
@@ -288,7 +263,7 @@ class ResumeTracker:
             "workspace_id": workspace_id or "",
             "knowledge_base_id": knowledge_base_id or "",
         }
-        pipeline.hset(doc_info_key, mapping=doc_info)
+        await pipeline.hset(doc_info_key, mapping=doc_info)
 
         # Chunk set per document
         doc_chunks_key = self._doc_chunks_key(
@@ -307,13 +282,13 @@ class ResumeTracker:
                 ),
                 "created_at": now,
             }
-            pipeline.hset(chunk_key, mapping=chunk_data)
-            pipeline.sadd(doc_chunks_key, chunk.documentKey)
-            pipeline.expire(chunk_key, EXPIRE_TTL)
+            await pipeline.hset(chunk_key, mapping=chunk_data)
+            await pipeline.sadd(doc_chunks_key, chunk.documentKey)
+            await pipeline.expire(chunk_key, get_envs().REDIS_EXPIRE_TTL)
 
-        pipeline.expire(doc_info_key, EXPIRE_TTL)
-        pipeline.expire(doc_chunks_key, EXPIRE_TTL)
-        pipeline.execute()
+        await pipeline.expire(doc_info_key, get_envs().REDIS_EXPIRE_TTL)
+        await pipeline.expire(doc_chunks_key, get_envs().REDIS_EXPIRE_TTL)
+        await pipeline.execute()
 
         logger.info(
             f"Registered {len(chunks)} chunks for document {document_id} in Redis"
@@ -321,7 +296,7 @@ class ResumeTracker:
 
     # ======================== Completion + cleanup ============================
 
-    def mark_document_completed(
+    async def mark_document_completed(
         self,
         document_id: str,
         workspace_id: str,
@@ -342,13 +317,13 @@ class ResumeTracker:
             "workspace_id": (workspace_id or ""),
             "knowledge_base_id": (knowledge_base_id or ""),
         }
-        self.redis_client.hset(completion_key, mapping=completion_data)
-        self.redis_client.expire(completion_key, EXPIRE_TTL)
+        await self.redis_client.hset(completion_key, mapping=completion_data)
+        await self.redis_client.expire(completion_key, get_envs().REDIS_EXPIRE_TTL)
 
         # Update doc session status (if exists)
         doc_info_key = self._doc_info_key(document_id, workspace_id, knowledge_base_id)
-        if self.redis_client.exists(doc_info_key):
-            self.redis_client.hset(
+        if await self.redis_client.exists(doc_info_key):
+            await self.redis_client.hset(
                 doc_info_key,
                 mapping={
                     "pipeline_completed": "true",
@@ -360,9 +335,11 @@ class ResumeTracker:
         logger.info(f"Marked document {document_id} as fully completed")
 
         # Cleanup session tracking
-        self._cleanup_document_tracking(document_id, workspace_id, knowledge_base_id)
+        await self._cleanup_document_tracking(
+            document_id, workspace_id, knowledge_base_id
+        )
 
-    def _cleanup_document_tracking(
+    async def _cleanup_document_tracking(
         self,
         document_id: str,
         workspace_id: str,
@@ -373,18 +350,18 @@ class ResumeTracker:
             doc_chunks_key = self._doc_chunks_key(
                 document_id, workspace_id, knowledge_base_id
             )
-            chunk_ids = self.redis_client.smembers(doc_chunks_key)
+            chunk_ids = await self.redis_client.smembers(doc_chunks_key)
 
             pipeline = self.redis_client.pipeline()
             for chunk_id in chunk_ids:
                 chunk_key = self._chunk_key(chunk_id, workspace_id, knowledge_base_id)
-                pipeline.delete(chunk_key)
+                await pipeline.delete(chunk_key)
 
-            pipeline.delete(doc_chunks_key)
-            pipeline.delete(
+            await pipeline.delete(doc_chunks_key)
+            await pipeline.delete(
                 self._doc_info_key(document_id, workspace_id, knowledge_base_id)
             )
-            pipeline.execute()
+            await pipeline.execute()
 
             logger.info(
                 f"Cleaned up tracking data for {len(chunk_ids)} chunks in document {document_id}"
@@ -395,7 +372,7 @@ class ResumeTracker:
                 f"Failed to cleanup tracking data for document {document_id}: {e}"
             )
 
-    def get_processing_stats(
+    async def get_processing_stats(
         self,
         document_id: str,
         workspace_id: str,
@@ -403,14 +380,14 @@ class ResumeTracker:
     ) -> Dict:
         """Return simple doc processing stats (chunk-session only, no entity/relation)."""
         doc_info_key = self._doc_info_key(document_id, workspace_id, knowledge_base_id)
-        doc_info = self.redis_client.hgetall(doc_info_key)
+        doc_info = await self.redis_client.hgetall(doc_info_key)
 
         if not doc_info:
             # May have been completed in a previous session
             completion_key = self._doc_completion_key(
                 document_id, workspace_id, knowledge_base_id
             )
-            completion_data = self.redis_client.hgetall(completion_key)
+            completion_data = await self.redis_client.hgetall(completion_key)
             if completion_data:
                 return {
                     "document_id": document_id,
@@ -428,16 +405,18 @@ class ResumeTracker:
             "last_updated": doc_info.get("last_updated"),
         }
 
-    def reset_document(
+    async def reset_document(
         self,
         document_id: str,
         workspace_id: str,
         knowledge_base_id: str,
     ) -> None:
         """Reset processing status for a document (testing/debug)."""
-        self._cleanup_document_tracking(document_id, workspace_id, knowledge_base_id)
+        await self._cleanup_document_tracking(
+            document_id, workspace_id, knowledge_base_id
+        )
         completion_key = self._doc_completion_key(
             document_id, workspace_id, knowledge_base_id
         )
-        self.redis_client.delete(completion_key)
+        await self.redis_client.delete(completion_key)
         logger.info(f"Reset processing status for document {document_id}")

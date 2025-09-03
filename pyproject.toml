@@ -50,6 +50,7 @@ dependencies = [
     "sqlmodel==0.0.24",
     "asyncpg==0.30.0",
     "pgvector==0.4.1",
+    "boto3-stubs==1.40.21",
 ]
 
 [project.scripts]

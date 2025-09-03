@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 
 import lancedb
 
-from hirag_prod._utils import EmbeddingFunc
+from hirag_prod._utils import AsyncEmbeddingFunction
 from hirag_prod.storage.base_vdb import BaseVDB
 from hirag_prod.storage.lance_schema import get_chunks_schema, get_relations_schema
 from hirag_prod.storage.retrieval_strategy_provider import RetrievalStrategyProvider
@@ -19,14 +19,14 @@ TOPN = 4
 
 @dataclass
 class LanceDB(BaseVDB):
-    embedding_func: EmbeddingFunc
+    embedding_func: Optional[AsyncEmbeddingFunction]
     db: lancedb.AsyncConnection
     strategy_provider: RetrievalStrategyProvider
 
     @classmethod
     async def create(
         cls,
-        embedding_func: EmbeddingFunc,
+        embedding_func: Optional[AsyncEmbeddingFunction],
         db_url: str,
         strategy_provider: RetrievalStrategyProvider,
     ):
@@ -354,6 +354,3 @@ class LanceDB(BaseVDB):
             await self.db.create_table(
                 "Triplets", schema=get_relations_schema(embedding_dimension)
             )
-
-    async def clean_up(self):
-        pass

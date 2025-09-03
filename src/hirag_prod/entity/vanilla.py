@@ -13,6 +13,7 @@ from hirag_prod._utils import (
 from hirag_prod.entity.base import BaseKG
 from hirag_prod.prompt import PROMPTS
 from hirag_prod.schema import Chunk, Entity, Relation
+from src.hirag_prod.configs.functions import get_config_manager
 
 
 @dataclass
@@ -24,7 +25,6 @@ class VanillaKG(BaseKG):
     # === Core Components ===
     llm_model_name: str = field(default="gpt-4o")
     extract_func: Callable
-    language: str = field(default="en")  # en | cn-s | cn-t
 
     # === Entity Extraction Configuration ===
     entity_extract_prompt: str = field(init=False)
@@ -36,34 +36,23 @@ class VanillaKG(BaseKG):
     chunk_processing_concurrency: int = field(default=16)
 
     def __post_init__(self):
-        self._update_language_config()
+        self.update_language_config()
 
-    def _update_language_config(self):
+    def update_language_config(self):
         """Update all language-specific configurations based on current language setting."""
 
-        self.entity_extract_prompt = PROMPTS[f"entity_extraction_{self.language}"]
-        self.relation_extract_prompt = PROMPTS[f"triplet_extraction_{self.language}"]
-
-    def set_language(self, language: str):
-        """
-        Update the language setting and refresh all language-specific configurations.
-
-        Args:
-            language: Language code ('en' or 'cn-s' or 'cn-t')
-        """
-        if language not in ["en", "cn-s", "cn-t"]:
-            raise ValueError(
-                f"Unsupported language: {language}. Supported languages: ['en', 'cn-s', 'cn-t']"
-            )
-
-        self.language = language
-        self._update_language_config()
-        logging.info(f"[VanillaKG] Language updated to {language}")
+        self.entity_extract_prompt = PROMPTS[
+            f"entity_extraction_{get_config_manager().language}"
+        ]
+        self.relation_extract_prompt = PROMPTS[
+            f"triplet_extraction_{get_config_manager().language}"
+        ]
+        logging.info(f"[VanillaKG] Language updated to {get_config_manager().language}")
 
     @classmethod
-    def create(cls, language: str = "en", **kwargs) -> "VanillaKG":
+    def create(cls, **kwargs) -> "VanillaKG":
         """Factory method to create a VanillaKG instance with custom configuration."""
-        return cls(language=language, **kwargs)
+        return cls(**kwargs)
 
     async def _dense_sparse_integration(
         self, entities: List[Entity], chunk: Chunk

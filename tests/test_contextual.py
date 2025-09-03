@@ -3,8 +3,14 @@ import json
 import os
 import sys
 
+from hirag_prod.configs.functions import initialize_config_manager
+from hirag_prod.resources.functions import (
+    get_db_session_maker,
+    get_resource_manager,
+    initialize_resource_manager,
+)
+
 sys.path.append("src")
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hirag_prod.contextual.client import ContextualClient
 
@@ -63,14 +69,8 @@ async def get_doc(doc_id, output_dir):
     """Test the contextual client by parsing a document."""
     client = ContextualClient()
 
-    # Create database engine and session if connection string is available
-    db_url = os.getenv("POSTGRES_URL_NO_SSL_DEV")
-    if db_url:
-        engine = client.create_db_engine(db_url)
-        async with AsyncSession(engine) as session:
-            res = await client.get_parse_results(doc_id, session=session)
-    else:
-        res = await client.get_parse_results(doc_id)
+    async with get_db_session_maker()() as session:
+        res = await client.get_parse_results(doc_id, session=session)
 
     save_file(output_dir, res)
 
@@ -81,25 +81,28 @@ async def parse_doc(file_path: str, output_dir: str):
 
     print(f"Document: {file_path}")
 
-    # Create database engine and session if connection string is available
-    db_url = os.getenv("POSTGRES_URL_NO_SSL_DEV")
-    if db_url:
-        engine = client.create_db_engine(db_url)
-        async with AsyncSession(engine) as session:
-            res = await client.parse_document_sync(file_path, session=session)
-    else:
-        res = await client.parse_document_sync(file_path)
+    async with get_db_session_maker()() as session:
+        res = await client.parse_document_sync(file_path, session=session)
 
     print("✅ Completed successfully!")
 
     save_file(output_dir, res)
 
 
-if __name__ == "__main__":
+async def main():
     if not os.getenv("CONTEXTUAL_API_KEY"):
         print("Error: CONTEXTUAL_API_KEY environment variable is not set.")
         print("Please set your API key: export CONTEXTUAL_API_KEY='your_api_key'")
         sys.exit(1)
 
-    # asyncio.run(parse_doc("tests/test_files/COMP4471_Fall_24-25.pdf", "tests/output/"))
-    asyncio.run(get_doc("49968c8b-cdb6-48d6-b15f-8b5549ec1452", "tests/output/"))
+    initialize_config_manager()
+    await initialize_resource_manager()
+
+    # await parse_doc("tests/test_files/COMP4471_Fall_24-25.pdf", "tests/output/")
+    await get_doc("49968c8b-cdb6-48d6-b15f-8b5549ec1452", "tests/output/")
+
+    await get_resource_manager().cleanup()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

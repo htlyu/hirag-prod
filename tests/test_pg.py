@@ -2,29 +2,35 @@
 PostgreSQL utils test
 """
 
-import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlmodel.ext.asyncio.session import AsyncSession
+import pytest_asyncio
+from sqlalchemy import text
 
-from hirag_prod.storage.pg_utils import DatabaseClient
+from hirag_prod.configs.functions import get_envs, initialize_config_manager
+from hirag_prod.resources.functions import (
+    get_db_session_maker,
+    get_resource_manager,
+    initialize_resource_manager,
+)
+from hirag_prod.storage.pg_utils import insert_job, update_job_status
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def initialize_and_cleanup():
+    initialize_config_manager()
+    await initialize_resource_manager()
+    yield
+    await get_resource_manager().cleanup()
 
 
 @pytest.mark.asyncio
 async def test_database_connection():
     """Test database connection"""
-    if not os.getenv("POSTGRES_URL_NO_SSL_DEV"):
-        pytest.skip("No database connection string")
-
-    db = DatabaseClient()
-
     try:
-        engine = db.create_db_engine()
-        async with AsyncSession(engine) as session:
+        async with get_db_session_maker()() as session:
             # Simple test query to verify connection
-            from sqlalchemy import text
-
             result = await session.exec(text("SELECT 1 as result"))
             row = result.first()
             assert row.result == 1
@@ -35,23 +41,15 @@ async def test_database_connection():
 @pytest.mark.asyncio
 async def test_update_job_status():
     """Insert a temp record, update it, verify, then delete."""
-    if not os.getenv("POSTGRES_URL_NO_SSL_DEV"):
-        pytest.skip("No database connection string")
-
-    db = DatabaseClient()
-    engine = db.create_db_engine()
-
     # Check if the table exists first
     try:
-        async with AsyncSession(engine) as session:
-            from sqlalchemy import text
-
+        async with get_db_session_maker()() as session:
             check_query = text(
                 f"""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
-                    WHERE table_schema = '{db.schema_name or 'public'}' 
-                    AND table_name = '{db.table_name}'
+                    WHERE table_schema = '{get_envs().POSTGRES_SCHEMA or 'public'}' 
+                    AND table_name = '{get_envs().POSTGRES_TABLE_NAME}'
                 );
             """
             )
@@ -59,7 +57,7 @@ async def test_update_job_status():
             table_exists = result.first()[0]
             if not table_exists:
                 pytest.skip(
-                    f"Table {db.schema_name or 'public'}.{db.table_name} does not exist"
+                    f"Table {get_envs().POSTGRES_SCHEMA or 'public'}.{get_envs().POSTGRES_TABLE_NAME} does not exist"
                 )
     except Exception:
         pytest.skip("Unable to check table existence")
@@ -70,8 +68,8 @@ async def test_update_job_status():
     print(f"\n=== DEBUG INFO ===")
     print(f"Test job ID: {temp_job_id}")
     print(f"Workspace ID: {workspace_id}")
-    print(f"Database schema: {db.schema_name or 'public'}")
-    print(f"Table name: {db.table_name}")
+    print(f"Database schema: {get_envs().POSTGRES_SCHEMA or 'public'}")
+    print(f"Table name: {get_envs().POSTGRES_TABLE_NAME}")
 
     try:
         # Insert a test record
@@ -80,8 +78,8 @@ async def test_update_job_status():
             f"\nInserting record with initial_updated_at: {initial_updated_at} (type: {type(initial_updated_at)})"
         )
 
-        async with AsyncSession(engine) as session:
-            affected = await db.insert_job(
+        async with get_db_session_maker()() as session:
+            affected = await insert_job(
                 session,
                 temp_job_id,
                 workspace_id,
@@ -93,13 +91,11 @@ async def test_update_job_status():
 
         # Verify the inserted record can be queried and data matches
         print(f"\nVerifying inserted record...")
-        async with AsyncSession(engine) as session:
-            from sqlalchemy import text
-
+        async with get_db_session_maker()() as session:
             query = text(
                 f"""
                 SELECT "jobId", "workspaceId", "status", "updatedAt" 
-                FROM "{db.schema_name or 'public'}"."{db.table_name}"
+                FROM "{get_envs().POSTGRES_SCHEMA or 'public'}"."{get_envs().POSTGRES_TABLE_NAME}"
                 WHERE "jobId" = '{temp_job_id}'
             """
             )
@@ -132,19 +128,17 @@ async def test_update_job_status():
 
         # Update the job status
         print(f"\nUpdating job status to 'processing'...")
-        async with AsyncSession(engine) as session:
-            affected = await db.update_job_status(session, temp_job_id, "processing")
+        async with get_db_session_maker()() as session:
+            affected = await update_job_status(session, temp_job_id, "processing")
             print(f"Update operation affected {affected} row(s)")
             assert affected == 1
 
         # Verify the update
         print(f"Verifying status update...")
-        async with AsyncSession(engine) as session:
-            from sqlalchemy import text
-
+        async with get_db_session_maker()() as session:
             query = text(
                 f"""
-                SELECT "status", "updatedAt" FROM "{db.schema_name or 'public'}"."{db.table_name}"
+                SELECT "status", "updatedAt" FROM "{get_envs().POSTGRES_SCHEMA or 'public'}"."{get_envs().POSTGRES_TABLE_NAME}"
                 WHERE "jobId" = '{temp_job_id}'
             """
             )
@@ -158,8 +152,8 @@ async def test_update_job_status():
         # Update with explicit timestamp
         explicit_ts = datetime.now(timezone.utc) - timedelta(seconds=5)
         print(f"\nUpdating with explicit timestamp: {explicit_ts}")
-        async with AsyncSession(engine) as session:
-            affected = await db.update_job_status(
+        async with get_db_session_maker()() as session:
+            affected = await update_job_status(
                 session, temp_job_id, "completed", updated_at=explicit_ts
             )
             print(f"Explicit timestamp update affected {affected} row(s)")
@@ -167,10 +161,10 @@ async def test_update_job_status():
 
         # Verify the explicit timestamp update
         print(f"Verifying explicit timestamp update...")
-        async with AsyncSession(engine) as session:
+        async with get_db_session_maker()() as session:
             query = text(
                 f"""
-                SELECT "status", "updatedAt" FROM "{db.schema_name or 'public'}"."{db.table_name}"
+                SELECT "status", "updatedAt" FROM "{get_envs().POSTGRES_SCHEMA or 'public'}"."{get_envs().POSTGRES_TABLE_NAME}"
                 WHERE "jobId" = '{temp_job_id}'
             """
             )
@@ -204,23 +198,16 @@ async def test_update_job_status():
 @pytest.mark.asyncio
 async def test_fetch_records():
     """Test fetching all records."""
-    if not os.getenv("POSTGRES_URL_NO_SSL_DEV"):
-        pytest.skip("No database connection string")
-
-    db = DatabaseClient()
-    engine = db.create_db_engine()
 
     # Check if the table exists first
     try:
-        async with AsyncSession(engine) as session:
-            from sqlalchemy import text
-
+        async with get_db_session_maker()() as session:
             check_query = text(
                 f"""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
-                    WHERE table_schema = '{db.schema_name or 'public'}' 
-                    AND table_name = '{db.table_name}'
+                    WHERE table_schema = '{get_envs().POSTGRES_SCHEMA or 'public'}' 
+                    AND table_name = '{get_envs().POSTGRES_TABLE_NAME}'
                 );
             """
             )
@@ -228,7 +215,7 @@ async def test_fetch_records():
             table_exists = result.first()[0]
             if not table_exists:
                 pytest.skip(
-                    f"Table {db.schema_name or 'public'}.{db.table_name} does not exist"
+                    f"Table {get_envs().POSTGRES_SCHEMA or 'public'}.{get_envs().POSTGRES_TABLE_NAME} does not exist"
                 )
     except Exception:
         pytest.skip("Unable to check table existence")
