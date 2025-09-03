@@ -874,7 +874,7 @@ class HiRAG:
                     "⚠️ Document already processed in previous session, clearing and overwritting..."
                 )
                 try:
-                    self._processor.resume_tracker.reset_document(
+                    await self._processor.resume_tracker.reset_document(
                         document_id, workspace_id, knowledge_base_id
                     )
                     await self._processor.clear_document(

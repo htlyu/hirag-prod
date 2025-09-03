@@ -44,6 +44,11 @@ class StorageManager:
             raise StorageError(f"Failed to initialize VDB: {e}")
 
     @retry_async()
+    async def clean_vdb_table(self, where: Dict[str, Any]) -> None:
+        await self.vdb.clean_table(table_name="Chunks", where=where)
+        await self.vdb.clean_table(table_name="Triplets", where=where)
+
+    @retry_async()
     async def upsert_chunks_to_vdb(self, chunks: List[Chunk]) -> None:
         if not chunks:
             return
@@ -77,6 +82,7 @@ class StorageManager:
                 "source": r.source,
                 "target": r.target,
                 "description": r.properties.get("description", ""),
+                "documentId": r.properties.get("document_id", ""),
                 "fileName": r.properties.get("file_name", ""),
                 "knowledgeBaseId": r.properties.get("knowledge_base_id", ""),
                 "workspaceId": r.properties.get("workspace_id", ""),
