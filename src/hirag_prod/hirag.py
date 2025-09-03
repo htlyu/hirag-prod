@@ -870,7 +870,7 @@ class HiRAG:
             except Exception as e:
                 logger.warning(f"Failed to initialize external job {job_id}: {e}")
 
-        if self._processor.resume_tracker.is_document_already_completed(
+        if await self._processor.resume_tracker.is_document_already_completed(
             document_id, workspace_id, knowledge_base_id
         ):
             if overwrite:
