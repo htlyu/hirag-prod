@@ -207,42 +207,39 @@ Here is the given text and entity list to extract triplets from.
 PROMPTS[
     "summary_all_en"
 ] = """
-You are an AI assistant that helps summarize a given stream of data.
+You are an AI assistant responsible for summarizing given data streams according to user queries.
 
 ## Goal
-Write a comprehensive summary of the given data, given a list of chunks of raw text. 
+Based on the given list of raw text chunks, write a comprehensive summary.
 If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
-Make sure it is written in third person, and include the entity names so we have the full context.
+Ensure it is written in third person and include entity names to provide complete context.
 
-## Grounding Rules
+## Basic Rules
+Statements supported by data should be indicated as follows:
+"This is a statement supported by data {reference_placeholder}."
 
-Points supported by data should indicate that they are supported by the data as follows:
-
-"This is an example sentence supported by data references {reference_placeholder}."
-
-No matter which data source the information comes from or how many sources referred to, it should be referenced in the same way, indicating {reference_placeholder} at the end of the sentence, before the period.
-
-Do not include the key or the id of the data record in the summary.
-
-Do not include information where the supporting evidence for it is not provided.
-
-Never use two references in the same sentence or one directly after another.
-
+Regardless of which data source the information comes from or how many sources reference it, it should be marked in the same way, indicating {reference_placeholder} before the punctuation at the end of the sentence.
+Do not include keys or IDs of data records.
+Do not include information without supporting evidence.
+Never use two references in the same sentence or consecutive references.
+If the data stream contains information irrelevant to the user query, please ignore it.
 Limit the total report length to {max_report_length} words.
 
 ## Example
-
 **Input Text:**
 Data:
-
-Chunks
+Chunks:
 id,chunk
-1,The Unity March is a significant event that is taking place at Verdant Oasis Plaza.
-2,The Harmony Assembly is organizing the Unity March at Verdant Oasis Plaza.
+1, The Unity March is a significant event taking place at Verdant Oasis Plaza.
+2, The Harmony Assembly is organizing the Unity March at Verdant Oasis Plaza.
+3, This weekend's weather forecast is sunny, suitable for outdoor activities.
+
+**Query:**
+Information about the Unity March
 
 **Output:**
-The Unity March is a significant event that is taking place at Verdant Oasis Plaza {reference_placeholder}. 
-The Harmony Assembly is organizing the Unity March at Verdant Oasis Plaza {reference_placeholder}. 
+The Unity March is a significant event taking place at Verdant Oasis Plaza {reference_placeholder}.
+The Harmony Assembly is organizing the Unity March at Verdant Oasis Plaza {reference_placeholder}.
 
 ## Real Data
 
@@ -251,6 +248,9 @@ Use the following data for your answer.
 **Input Text:**
 Data:
 {data}
+
+**Query:**
+{user_query}
 
 **Output:**
 """
@@ -449,37 +449,39 @@ Radio City 是印度首家私营 FM 广播电台，于 2001 年 7 月 3 日开�
 PROMPTS[
     "summary_all_cn-s"
 ] = """
-你是一个 AI 助手，帮助总结给定的数据流的相关信息。
+你是一个AI助手，负责根据用户询问总结给定的数据流。
 
 ## 目标
-
-根据给定的原始文本块列表，撰写一份综合摘要。
-如果所提供的描述存在矛盾，请解决这些矛盾并提供一个连贯一致的摘要。
+根据给定的原始文本块列表，撰写综合摘要。
+如果描述有矛盾，请解决矛盾并提供单一、连贯的摘要。
 确保以第三人称撰写，并包含实体名称以提供完整上下文。
 
 ## 基础规则
+由数据支持的陈述应如下标示：
+"这是一个由数据支持的陈述 {reference_placeholder}。"
 
-由数据支持的要点应按以下方式表明受到数据支持：
-"这是一句由数据支持的语句 {reference_placeholder}。"
-
-无论信息来自哪个数据源或被多少来源引用，都应以相同方式引用，在句末标点前指示 {reference_placeholder}。
-摘要中不要包含数据记录的键或 ID。
-不要包含未提供支持证据的信息。
-绝不在同一句中使用两个引用或一个接一个的引用。
+无论信息来自哪个数据源或被多少来源引用，都应以相同方式标示，在句末标点前标示 {reference_placeholder}。
+不要包含数据记录的键或ID。
+不要包含没有支持证据的信息。
+不要在同一句中使用两个引用或连续引用。
+如果数据流包含与用户询问不相关的信息，请忽略这些信息。
 将报告总长度限制为 {max_report_length} 字。
 
 ## 示例
-
 **输入文本:**
 数据:
 Chunks:
 id,chunk
 1, 联合游行是一个重要事件，正在 Verdant Oasis Plaza 举行。
 2, 和谐集会正在 Verdant Oasis Plaza 组织联合游行。
+3, 这个周末的天气预报是晴朗的，适合户外活动。
+
+**询问:**
+联合游行的信息
 
 **输出:**
 联合游行是一个重要的活动，正在 Verdant Oasis Plaza 举行 {reference_placeholder}。
-和谐集会正在组织在 Verdant Oasis Plaza 举行的联合游行 {reference_placeholder}。 
+和谐集会正在组织在 Verdant Oasis Plaza 举行的联合游行 {reference_placeholder}。
 
 ## 实际数据
 
@@ -488,6 +490,9 @@ id,chunk
 **输入文本:**
 数据:
 {data}
+
+**询问:**
+{user_query}
 
 **输出:**
 """
@@ -686,7 +691,7 @@ Radio City 是印度首家私營 FM 廣播電臺，於 2001 年 7 月 3 日開�
 PROMPTS[
     "summary_all_cn-t"
 ] = """
-你是一個AI助手, 負責總結給定的數據流。
+你是一個AI助手，負責根據用戶的詢問總結給定的數據流。
 
 ## 目標
 根據給定的原始文本塊列表，撰寫綜合摘要。
@@ -697,31 +702,39 @@ PROMPTS[
 由數據支持的陳述應如下標示：
 "這是一個由數據支持的陳述 {reference_placeholder}。"
 
-無論資訊來自哪個數據源或被多少來源引用，都應以相同方式標示，在句末標點前標示{reference_placeholder}。
+無論資訊來自哪個數據源或被多少來源引用，都應以相同方式標示，在句末標點前標示 {reference_placeholder}。
 不要包含數據記錄的鍵或ID。
 不要包含沒有支持證據的資訊。
 不要在同一句中使用兩個引用或連續引用。
+如果數據流包含與用戶詢問不相關的資訊，請忽略這些資訊。
 將報告總長度限制為 {max_report_length} 字。
 
 ## 示例
-**輸入文本:**  
-數據:  
-Chunks:  
-id,chunk  
-1, 聯合遊行是一個重要事件，正在 Verdant Oasis Plaza 舉行。  
-2, 和諧集會正在 Verdant Oasis Plaza 組織聯合遊行。  
+**輸入文本:**
+數據:
+Chunks:
+id,chunk
+1, 聯合遊行是一個重要事件，正在 Verdant Oasis Plaza 舉行。
+2, 和諧集會正在 Verdant Oasis Plaza 組織聯合遊行。
+3, 這個週末的天氣預報是晴朗的，適合戶外活動。
 
-**輸出:**  
-聯合遊行是一個重要的活動，正在 Verdant Oasis Plaza 舉行 {reference_placeholder}。  
+**詢問:**
+聯合遊行的資訊
+
+**輸出:**
+聯合遊行是一個重要的活動，正在 Verdant Oasis Plaza 舉行 {reference_placeholder}。
 和諧集會正在組織在 Verdant Oasis Plaza 舉行的聯合遊行 {reference_placeholder}。
 
 ## 實際數據
 
 使用以下數據進行回答。
 
-**輸入文本:**  
-數據:  
+**輸入文本:**
+數據:
 {data}
 
-**輸出**:
+**詢問:**
+{user_query}
+
+**輸出:**
 """

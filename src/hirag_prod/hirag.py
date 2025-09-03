@@ -628,6 +628,7 @@ class HiRAG:
         self,
         workspace_id: str,
         knowledge_base_id: str,
+        query: str,
         chunks: List[Dict[str, Any]],
     ) -> str:
         """Generate summary from chunks"""
@@ -655,7 +656,10 @@ class HiRAG:
             )
 
             prompt = prompt.format(
-                data=data, max_report_length="5000", reference_placeholder=placeholder
+                data=data,
+                max_report_length="5000",
+                reference_placeholder=placeholder,
+                user_query=query,
             )
 
             try:
@@ -968,6 +972,7 @@ class HiRAG:
             text_summary = await self.generate_summary(
                 workspace_id=workspace_id,
                 knowledge_base_id=knowledge_base_id,
+                query=query,
                 chunks=query_results["chunks"],
             )
             query_results["summary"] = text_summary

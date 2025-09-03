@@ -32,7 +32,7 @@ def get_test(id: str):
             "uri": document_path,
             "private": False,
         }
-        query = "Machine Learning Detection Methods?"
+        query = "Machine learning in detection"
         return document_path, content_type, document_meta, query
     elif id == "oss: U.S.Health" or id == "3":
         document_path = (
@@ -45,7 +45,7 @@ def get_test(id: str):
             "uri": document_path,
             "private": False,
         }
-        query = "What are the key components of the U.S. healthcare system?"
+        query = "What is the structure of the U.S. healthcare system?"
         return document_path, content_type, document_meta, query
 
 
@@ -63,7 +63,7 @@ async def index():
         workspace_id="test_workspace",
         knowledge_base_id="test_pg",
         loader_type="dots_ocr",
-        overwrite=True,
+        # overwrite=True,
     )
 
     ret = await index.query(
