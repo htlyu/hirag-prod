@@ -1,8 +1,10 @@
 import threading
 from typing import Dict, List, Optional
 
+from hirag_prod.configs.embedding_config import EmbeddingConfig
 from hirag_prod.configs.envs import Envs
 from hirag_prod.configs.hi_rag_config import HiRAGConfig
+from hirag_prod.configs.llm_config import LLMConfig
 
 
 class ConfigManager:
@@ -22,6 +24,10 @@ class ConfigManager:
 
         self.envs: Envs = Envs(config_dict)
         self.hi_rag_config = HiRAGConfig(**self.envs.model_dump())
+        self.embedding_config: EmbeddingConfig = EmbeddingConfig(
+            **self.envs.model_dump()
+        )
+        self.llm_config: LLMConfig = LLMConfig(**self.envs.model_dump())
 
         self.supported_languages: List[str] = ["en", "cn-s", "cn-t"]
         self.language: str = (

@@ -1,11 +1,9 @@
 import asyncio
 import logging
-import os
 import threading
 import weakref
 from abc import ABC
 from dataclasses import dataclass
-from enum import Enum
 from functools import wraps
 from typing import Any, Dict, List, Optional, Union
 
@@ -20,23 +18,13 @@ from tenacity import (
     wait_exponential,
 )
 
+from hirag_prod.configs.embedding_config import EmbeddingConfig
+from hirag_prod.configs.functions import get_embedding_config, get_llm_config
+from hirag_prod.configs.llm_config import LLMConfig
+
 # ============================================================================
 # Constants
 # ============================================================================
-
-
-class EmbeddingServiceType(Enum):
-    """Types of embedding services"""
-
-    OPENAI = "openai"
-    LOCAL = "local"
-
-
-class LLMServiceType(Enum):
-    """Types of LLM services"""
-
-    OPENAI = "openai"
-    LOCAL = "local"
 
 
 class APIConstants:
@@ -83,163 +71,6 @@ class TokenUsage:
 
     def __str__(self) -> str:
         return f"Tokens - Prompt: {self.prompt_tokens}, Completion: {self.completion_tokens}, Total: {self.total_tokens}"
-
-
-@dataclass
-class APIConfig:
-    """Base configuration for OpenAI APIs"""
-
-    api_key: str
-    base_url: str
-
-    @classmethod
-    def from_env(cls, api_key_env: str, base_url_env: str) -> "APIConfig":
-        """Create config from environment variables"""
-        api_key = os.getenv(api_key_env)
-        base_url = os.getenv(base_url_env)
-
-        if not api_key:
-            raise ValueError(f"{api_key_env} environment variable is not set")
-        if not base_url:
-            raise ValueError(f"{base_url_env} environment variable is not set")
-
-        return cls(api_key=api_key, base_url=base_url)
-
-
-@dataclass
-class LocalEmbeddingConfig:
-    """Configuration for local embedding service"""
-
-    base_url: str
-    model_name: str
-    entry_point: str
-    authorization_token: str
-    model_path: str
-    default_batch_size: int = 200  # Default batch size for local embedding service
-
-    @classmethod
-    def from_env(cls) -> "LocalEmbeddingConfig":
-        """Create local embedding config from environment variables"""
-        base_url = os.getenv("LOCAL_EMBEDDING_BASE_URL")
-        model_name = os.getenv("LOCAL_EMBEDDING_MODEL_NAME")
-        entry_point = os.getenv("LOCAL_EMBEDDING_ENTRY_POINT", "/v1/embeddings")
-        authorization_token = os.getenv("LOCAL_EMBEDDING_AUTH_TOKEN")
-        model_path = os.getenv("LOCAL_EMBEDDING_MODEL_PATH")
-        default_batch_size = int(os.getenv("LOCAL_EMBEDDING_BATCH_SIZE", "200"))
-
-        if not base_url:
-            raise ValueError("LOCAL_EMBEDDING_BASE_URL environment variable is not set")
-        if not model_name:
-            raise ValueError(
-                "LOCAL_EMBEDDING_MODEL_NAME environment variable is not set"
-            )
-        if not authorization_token:
-            raise ValueError(
-                "LOCAL_EMBEDDING_AUTH_TOKEN environment variable is not set"
-            )
-        if not model_path:
-            raise ValueError(
-                "LOCAL_EMBEDDING_MODEL_PATH environment variable is not set"
-            )
-
-        return cls(
-            base_url=base_url,
-            model_name=model_name,
-            entry_point=entry_point,
-            authorization_token=authorization_token,
-            model_path=model_path,
-            default_batch_size=default_batch_size,
-        )
-
-
-@dataclass
-class LocalLLMConfig:
-    """Configuration for local LLM service"""
-
-    base_url: str
-    model_name: str
-    entry_point: str
-    authorization_token: str
-
-    @classmethod
-    def from_env(cls) -> "LocalLLMConfig":
-        """Create local LLM config from environment variables"""
-        base_url = os.getenv("LOCAL_LLM_BASE_URL")
-        model_name = os.getenv("LOCAL_LLM_MODEL_NAME")
-        entry_point = os.getenv("LOCAL_LLM_ENTRY_POINT", "/v1/chat/completions")
-        authorization_token = os.getenv("LOCAL_LLM_AUTH_TOKEN")
-
-        if not base_url:
-            raise ValueError("LOCAL_LLM_BASE_URL environment variable is not set")
-        if not model_name:
-            raise ValueError("LOCAL_LLM_MODEL_NAME environment variable is not set")
-        if not authorization_token:
-            raise ValueError("LOCAL_LLM_AUTH_TOKEN environment variable is not set")
-
-        return cls(
-            base_url=base_url,
-            model_name=model_name,
-            entry_point=entry_point,
-            authorization_token=authorization_token,
-        )
-
-
-@dataclass
-class EmbeddingConfig:
-    """Configuration for embedding service with service type selection"""
-
-    service_type: EmbeddingServiceType
-    openai_config: Optional[APIConfig] = None
-    local_config: Optional[LocalEmbeddingConfig] = None
-
-    @classmethod
-    def from_env(cls) -> "EmbeddingConfig":
-        """Create embedding config from environment variables"""
-        service_type_str = os.getenv("EMBEDDING_SERVICE_TYPE", "openai").lower()
-
-        try:
-            service_type = EmbeddingServiceType(service_type_str)
-        except ValueError:
-            raise ValueError(
-                f"Invalid EMBEDDING_SERVICE_TYPE: {service_type_str}. Must be 'openai' or 'local'"
-            )
-
-        if service_type == EmbeddingServiceType.OPENAI:
-            openai_config = APIConfig.from_env(
-                "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL"
-            )
-            return cls(service_type=service_type, openai_config=openai_config)
-        else:
-            local_config = LocalEmbeddingConfig.from_env()
-            return cls(service_type=service_type, local_config=local_config)
-
-
-@dataclass
-class LLMConfig:
-    """Configuration for LLM service with service type selection"""
-
-    service_type: LLMServiceType
-    openai_config: Optional[APIConfig] = None
-    local_config: Optional[LocalLLMConfig] = None
-
-    @classmethod
-    def from_env(cls) -> "LLMConfig":
-        """Create LLM config from environment variables"""
-        service_type_str = os.getenv("LLM_SERVICE_TYPE", "openai").lower()
-
-        try:
-            service_type = LLMServiceType(service_type_str)
-        except ValueError:
-            raise ValueError(
-                f"Invalid LLM_SERVICE_TYPE: {service_type_str}. Must be 'openai' or 'local'"
-            )
-
-        if service_type == LLMServiceType.OPENAI:
-            openai_config = APIConfig.from_env("LLM_API_KEY", "LLM_BASE_URL")
-            return cls(service_type=service_type, openai_config=openai_config)
-        else:
-            local_config = LocalLLMConfig.from_env()
-            return cls(service_type=service_type, local_config=local_config)
 
 
 # ============================================================================
@@ -351,7 +182,7 @@ class SingletonMeta(type):
 class BaseAPIClient(ABC, metaclass=SingletonABCMeta):
     """Base class for API clients with singleton pattern"""
 
-    def __init__(self, config: APIConfig):
+    def __init__(self, config: Union[EmbeddingConfig, LLMConfig]):
         if not hasattr(self, "_initialized"):
             self._client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
             self._initialized = True
@@ -371,8 +202,7 @@ class ChatClient(BaseAPIClient):
 
     def __init__(self):
         if not hasattr(self, "_initialized"):
-            config = APIConfig.from_env("LLM_API_KEY", "LLM_BASE_URL")
-            super().__init__(config)
+            super().__init__(get_llm_config())
 
 
 class EmbeddingClient(BaseAPIClient):
@@ -380,16 +210,14 @@ class EmbeddingClient(BaseAPIClient):
 
     def __init__(self):
         if not hasattr(self, "_initialized"):
-            config = APIConfig.from_env("EMBEDDING_API_KEY", "EMBEDDING_BASE_URL")
-            super().__init__(config)
+            super().__init__(get_embedding_config())
 
 
 class LocalEmbeddingClient:
     """Client for local embedding service"""
 
-    def __init__(self, config: LocalEmbeddingConfig):
+    def __init__(self):
         self._logger = logging.getLogger(LoggerNames.EMBEDDING)
-        self.config = config
         self._http_client = httpx.AsyncClient(timeout=30.0)
 
     async def create_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -399,15 +227,18 @@ class LocalEmbeddingClient:
 
         headers = {
             "Content-Type": "application/json",
-            "Model-Name": self.config.model_name,
-            "Entry-Point": self.config.entry_point,
-            "Authorization": f"Bearer {self.config.authorization_token}",
+            "Model-Name": get_embedding_config().model_name,
+            "Entry-Point": get_embedding_config().entry_point,
+            "Authorization": f"Bearer {get_embedding_config().api_key}",
         }
 
-        payload = {"model": self.config.model_path, "input": batch_texts_to_embed}
+        payload = {
+            "model": get_embedding_config().model_path,
+            "input": batch_texts_to_embed,
+        }
 
         response = await self._http_client.post(
-            self.config.base_url, headers=headers, json=payload
+            get_embedding_config().base_url, headers=headers, json=payload
         )
 
         response.raise_for_status()
@@ -433,8 +264,7 @@ class LocalEmbeddingClient:
 class LocalLLMClient:
     """Client for local LLM service"""
 
-    def __init__(self, config: LocalLLMConfig):
-        self.config = config
+    def __init__(self):
         self._http_client = httpx.AsyncClient(timeout=120.0)
 
     async def create_chat_completion(
@@ -443,15 +273,15 @@ class LocalLLMClient:
         """Create chat completion using local service API"""
         headers = {
             "Content-Type": "application/json",
-            "Model-Name": self.config.model_name,
-            "Entry-Point": self.config.entry_point,
-            "Authorization": f"Bearer {self.config.authorization_token}",
+            "Model-Name": get_llm_config().model_name,
+            "Entry-Point": get_llm_config().entry_point,
+            "Authorization": f"Bearer {get_llm_config().authorization_token}",
         }
 
         payload = {"messages": messages, **kwargs}
 
         response = await self._http_client.post(
-            self.config.base_url, headers=headers, json=payload
+            get_llm_config().base_url, headers=headers, json=payload
         )
 
         response.raise_for_status()
@@ -642,18 +472,16 @@ class LocalChatService:
 
     def __init__(self):
         """Initialize with direct local client (no singleton)"""
-        self.config = LocalLLMConfig.from_env()
-        self.client = LocalLLMClient(self.config)
+        self.client = LocalLLMClient()
         self._logger = logging.getLogger(LoggerNames.CHAT)
         self._token_tracker = TokenUsageTracker()
 
         self._logger.info(
-            f"🔧 LocalChatService initialized with model: {self.config.model_name}"
+            f"🔧 LocalChatService initialized with model: {get_llm_config().model_name}"
         )
 
     async def complete(
         self,
-        model: str,
         prompt: str,
         system_prompt: Optional[str] = None,
         history_messages: Optional[List[Dict[str, str]]] = None,
@@ -663,7 +491,6 @@ class LocalChatService:
         Complete a chat prompt using local service.
 
         Args:
-            model: The model identifier (ignored for local service, uses configured model)
             prompt: The user prompt
             system_prompt: Optional system prompt
             history_messages: Optional conversation history
@@ -672,7 +499,7 @@ class LocalChatService:
         Returns:
             The completion response as a string
         """
-        model = self.config.model_name
+        model = get_llm_config().model_name
         messages = self._build_messages(system_prompt, history_messages, prompt)
 
         self._logger.info(
@@ -829,8 +656,6 @@ class TextValidator:
         for i, text in enumerate(texts):
             if text is None:
                 raise ValueError(f"Text at index {i} is None")
-            if not isinstance(text, str):
-                raise ValueError(f"Text at index {i} is not a string: {type(text)}")
 
             cleaned_text = text.strip()
             if not cleaned_text:
@@ -926,12 +751,13 @@ class LocalEmbeddingService:
 
     def __init__(self, default_batch_size: Optional[int] = None):
         """Initialize with direct local client (no singleton)"""
-        self.config = LocalEmbeddingConfig.from_env()
-        self.client = LocalEmbeddingClient(self.config)
+        self.client = LocalEmbeddingClient()
         self._logger = logging.getLogger(LoggerNames.EMBEDDING)
 
         # Set batch size
-        self.default_batch_size = default_batch_size or self.config.default_batch_size
+        self.default_batch_size = (
+            default_batch_size or get_embedding_config().default_batch_size
+        )
 
         # Initialize batch processor and text validator
         self._batch_processor = BatchProcessor(self._logger)
@@ -1000,7 +826,7 @@ def create_embedding_service(
     For OpenAI services, returns the full EmbeddingService.
     """
     # Check service type from environment
-    service_type = os.getenv("EMBEDDING_SERVICE_TYPE", "openai").lower()
+    service_type = get_embedding_config().service_type.lower()
 
     if service_type == "local":
         return LocalEmbeddingService(default_batch_size)
@@ -1016,7 +842,7 @@ def create_chat_service() -> Union[ChatCompletion, LocalChatService]:
     For OpenAI services, returns the singleton ChatCompletion.
     """
     # Check service type from environment
-    service_type = os.getenv("LLM_SERVICE_TYPE", "openai").lower()
+    service_type = get_llm_config().service_type.lower()
 
     if service_type == "local":
         return LocalChatService()

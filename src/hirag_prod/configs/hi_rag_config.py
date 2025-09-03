@@ -14,11 +14,6 @@ class HiRAGConfig(BaseSettings):
         "networkx"  # TODO: neo4j not implemented yet
     )
 
-    # Model configuration
-    llm_model_name: str = "gpt-4o"
-    llm_max_tokens: int = 16000  # Default max tokens for LLM
-    llm_timeout: float = 30.0  # Default timeout for LLM requests
-
     # Chunking configuration
     chunk_size: int = 1200
     chunk_overlap: int = 200
