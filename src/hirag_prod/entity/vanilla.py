@@ -10,10 +10,10 @@ from hirag_prod._utils import (
     _limited_gather_with_factory,
     compute_mdhash_id,
 )
+from hirag_prod.configs.functions import get_config_manager
 from hirag_prod.entity.base import BaseKG
 from hirag_prod.prompt import PROMPTS
 from hirag_prod.schema import Chunk, Entity, Relation
-from src.hirag_prod.configs.functions import get_config_manager
 
 
 @dataclass

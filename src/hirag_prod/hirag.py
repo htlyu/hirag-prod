@@ -22,6 +22,7 @@ from hirag_prod.chunk import BaseChunk, FixTokenChunk
 from hirag_prod.configs.functions import (
     get_config_manager,
     get_hi_rag_config,
+    get_llm_config,
     initialize_config_manager,
 )
 from hirag_prod.entity import BaseKG, VanillaKG
@@ -506,7 +507,7 @@ class HiRAG:
 
         self._kg_constructor = VanillaKG.create(
             extract_func=self.chat_service.complete,
-            llm_model_name=get_hi_rag_config().llm_model_name,
+            llm_model_name=get_llm_config().model_name,
         )
 
         # Initialize resume tracker
@@ -665,9 +666,9 @@ class HiRAG:
             try:
                 summary = await self.chat_complete(
                     prompt=prompt,
-                    max_tokens=get_hi_rag_config().llm_max_tokens,
-                    timeout=get_hi_rag_config().llm_timeout,
-                    model=get_hi_rag_config().llm_model_name,
+                    max_tokens=get_llm_config().max_tokens,
+                    timeout=get_llm_config().timeout,
+                    model=get_llm_config().model_name,
                 )
             except Exception as e:
                 logger.error(f"Summary generation failed: {e}")
