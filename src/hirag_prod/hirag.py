@@ -17,7 +17,7 @@ from hirag_prod._llm import (
     create_chat_service,
     create_embedding_service,
 )
-from hirag_prod._utils import _limited_gather_with_factory
+from hirag_prod._utils import _limited_gather_with_factory, compute_mdhash_id
 from hirag_prod.chunk import BaseChunk, FixTokenChunk
 from hirag_prod.configs.functions import (
     get_config_manager,
@@ -94,6 +94,24 @@ class DocumentProcessor:
         self.resume_tracker = resume_tracker
         self.metrics = metrics or MetricsCollector()
 
+    async def clear_document(
+        self,
+        document_id: str,
+        workspace_id: str,
+        knowledge_base_id: str,
+    ) -> ProcessingMetrics:
+
+        async with self.metrics.track_operation("clear_document"):
+            where_dict = {
+                "documentId": document_id,
+                "workspaceId": workspace_id,
+                "knowledgeBaseId": knowledge_base_id,
+            }
+
+            await self.storage.clean_vdb_table(where=where_dict)
+
+        return self.metrics.metrics
+
     async def process_document(
         self,
         document_path: str,
@@ -147,27 +165,15 @@ class DocumentProcessor:
                         )
                     except Exception:
                         pass
-                if await self.resume_tracker.is_document_already_completed(
-                    document_id, workspace_id, knowledge_base_id
-                ):
-                    logger.info(
-                        "🎉 Document already fully processed in previous session!"
-                    )
-                    if job_id:
-                        try:
-                            await self.resume_tracker.set_job_completed(job_id)
-                        except Exception:
-                            pass
-                    return self.metrics.metrics
-                else:
-                    document_uri = chunks[0].uri
-                    await self.resume_tracker.register_chunks(
-                        chunks,
-                        document_id,
-                        document_uri,
-                        workspace_id,
-                        knowledge_base_id,
-                    )
+
+                document_uri = chunks[0].uri
+                await self.resume_tracker.register_chunks(
+                    chunks,
+                    document_id,
+                    document_uri,
+                    workspace_id,
+                    knowledge_base_id,
+                )
 
             # Store file information after chunking but before processing chunks
             await self.storage.upsert_file_to_vdb(file)
@@ -225,7 +231,6 @@ class DocumentProcessor:
         # TODO: Add parallel processing for multi-file documents and large files
         async with self.metrics.track_operation("load_and_chunk"):
             generated_md = None
-            pages = 0
             try:
                 if content_type == "text/plain":
                     _, generated_md = await asyncio.to_thread(
@@ -808,6 +813,7 @@ class HiRAG:
         document_meta: Optional[Dict] = None,
         loader_configs: Optional[Dict] = None,
         job_id: Optional[str] = None,
+        overwrite: Optional[bool] = False,
         loader_type: LoaderType = "docling_cloud",
     ) -> ProcessingMetrics:
         """
@@ -832,9 +838,18 @@ class HiRAG:
 
         logger.info(f"🚀 Starting document processing: {document_path}")
         start_time = time.perf_counter()
+        document_uri = (
+            document_meta.get("uri", document_path) if document_meta else document_path
+        )
+        document_id = compute_mdhash_id(
+            f"{document_uri}:{knowledge_base_id}:{workspace_id}", prefix="doc-"
+        )
+
+        document_meta["documentKey"] = document_id
         document_meta["knowledgeBaseId"] = knowledge_base_id
         document_meta["workspaceId"] = workspace_id
         document_meta["uploadedAt"] = datetime.now()
+
         if job_id and self._processor and self._processor.resume_tracker is not None:
             try:
                 await self._processor.resume_tracker.set_job_status(
@@ -847,8 +862,42 @@ class HiRAG:
                     ),
                     with_graph=with_graph,
                 )
+
             except Exception as e:
                 logger.warning(f"Failed to initialize external job {job_id}: {e}")
+
+        if self._processor.resume_tracker.is_document_already_completed(
+            document_id, workspace_id, knowledge_base_id
+        ):
+            if overwrite:
+                logger.info(
+                    "⚠️ Document already processed in previous session, clearing and overwritting..."
+                )
+                try:
+                    self._processor.resume_tracker.reset_document(
+                        document_id, workspace_id, knowledge_base_id
+                    )
+                    await self._processor.clear_document(
+                        document_id, workspace_id, knowledge_base_id
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to reset document {document_id}: {e}")
+            else:
+                logger.info("🎉 Document already fully processed in previous session!")
+                if job_id:
+                    try:
+                        await self._processor.resume_tracker.set_job_completed(job_id)
+                    except Exception:
+                        pass
+                total_time = time.perf_counter() - start_time
+                metrics = ProcessingMetrics(
+                    total_chunks=0,
+                    total_entities=0,
+                    total_relations=0,
+                    processing_time=total_time,
+                    job_id=job_id,
+                )
+                return metrics
 
         try:
             metrics = await self._processor.process_document(

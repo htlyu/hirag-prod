@@ -11,7 +11,7 @@ class BaseGDB(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def query_one_hop(self, node_id: str) -> (List[Entity], List[Relation]):
+    async def query_one_hop(self, node_id: str) -> (List[Entity], List[Relation]):  # type: ignore
         raise NotImplementedError
 
     @abstractmethod
