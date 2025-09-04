@@ -7,6 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
 from hirag_prod._utils import AsyncEmbeddingFunction
+from hirag_prod.reranker.utils import apply_reranking
 from hirag_prod.resources.functions import get_db_engine, get_db_session_maker
 from hirag_prod.schema import Chunk, File, Triplets
 from hirag_prod.schema.base import Base as PGBase
@@ -196,6 +197,9 @@ class PGVector(BaseVDB):
         if topn is None:
             topn = self.strategy_provider.default_topn
 
+        if topn > topk:
+            raise ValueError(f"topn ({topn}) must be <= topk ({topk})")
+
         model = self.get_model(table_name)
 
         start = time.perf_counter()
@@ -234,8 +238,9 @@ class PGVector(BaseVDB):
                 payload["distance"] = dist
                 scored.append(payload)
 
-            if rerank:
-                pass  # TODO: refactor the rerank logic to directly rerank the retrieved content
+            scored = (
+                await apply_reranking(query, scored, topn, topk) if rerank else scored
+            )
 
             elapsed = time.perf_counter() - start
             logger.info(
