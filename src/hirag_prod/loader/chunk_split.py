@@ -75,12 +75,14 @@ LABEL_TO_CHUNK_TYPE = {
 # ======================== docling chunker ========================
 def _extract_docling_chunk_meta(chunk) -> dict:
     """Extract page number and merged bbox from a Docling chunk."""
+    chunk_idx = chunk.meta.chunk_idx
     min_l = float("inf")
     max_r = float("-inf")
     max_t = float("-inf")
     min_b = float("inf")
     page_no = None
     headers = chunk.meta.headings
+    children = chunk.meta.children
 
     for item in chunk.meta.doc_items or []:
         for prov in item.prov or []:
@@ -98,12 +100,14 @@ def _extract_docling_chunk_meta(chunk) -> dict:
 
     has_bbox = min_l != float("inf")
     return {
+        "chunk_idx": chunk_idx,
         "page_number": int(page_no) if page_no else None,
         "x_0": float(min_l) if has_bbox else None,
         "y_0": float(max_t) if has_bbox else None,
         "x_1": float(max_r) if has_bbox else None,
         "y_1": float(min_b) if has_bbox else None,
         "headers": headers if headers else None,
+        "children": children if children else None,
     }
 
 
@@ -167,7 +171,9 @@ def chunk_docling_document(docling_doc: DoclingDocument, doc_md: File) -> List[C
 
     # Convert to Chunk objects
     chunks = []
-    for idx, chunk in enumerate(doc_chunks):
+    chunk_id_mapping = {}
+
+    for _, chunk in enumerate(doc_chunks):
         chunk_type = determine_docling_chunk_type(chunk)
         docling_chunk_meta = _extract_docling_chunk_meta(chunk)
 
@@ -200,7 +206,7 @@ def chunk_docling_document(docling_doc: DoclingDocument, doc_md: File) -> List[C
         chunk_obj = Chunk(
             documentKey=compute_mdhash_id(chunk.text, prefix="chunk-"),
             text=chunk.text,
-            chunkIdx=idx,
+            chunkIdx=docling_chunk_meta["chunk_idx"],
             documentId=doc_md.documentKey,
             chunkType=chunk_type.value,
             pageNumber=page_number,
@@ -210,7 +216,9 @@ def chunk_docling_document(docling_doc: DoclingDocument, doc_md: File) -> List[C
             bbox=bbox,
             caption=None,
             # TODO: If using docling in the future, may need to do indexing for headers
-            headers=docling_chunk_meta["headers"],
+            headers=(
+                docling_chunk_meta["headers"] if docling_chunk_meta["headers"] else None
+            ),
             # inherit file metadata
             type=doc_md.type,
             fileName=doc_md.fileName,
@@ -219,10 +227,28 @@ def chunk_docling_document(docling_doc: DoclingDocument, doc_md: File) -> List[C
             uploadedAt=doc_md.uploadedAt,
             knowledgeBaseId=doc_md.knowledgeBaseId,
             workspaceId=doc_md.workspaceId,
-            children=None,
+            children=(
+                docling_chunk_meta["children"]
+                if docling_chunk_meta["children"]
+                else None
+            ),
         )
 
         chunks.append(chunk_obj)
+        chunk_id_mapping[chunk_obj.chunkIdx] = chunk_obj.documentKey
+
+    # Translate all chunk IDs to their document keys
+    for chunk in chunks:
+        if chunk.headers:
+            chunk.headers = [
+                chunk_id_mapping.get(header_id) for header_id in chunk.headers
+            ]
+        if chunk.children:
+            chunk.children = [
+                chunk_id_mapping.get(child_id) for child_id in chunk.children
+            ]
+
+    chunks.sort(key=lambda c: c.chunkIdx)
 
     return chunks
 
@@ -314,18 +340,23 @@ def get_toc_from_items(items: List[Item]) -> List[Dict[str, Any]]:
     def _extract_term(item: Item) -> Dict[str, Any]:
         if not _is_header(item):
             return None
+
         term = {
             "title": item.text,
             "chunk_id": item.documentKey,
         }
+
         # Go through children
         valid_children = []
-        for child_id in item.children:
-            child_idx = item_to_index.get(child_id)
-            vis_items.add(child_id)
-            extracted_child = _extract_term(items[child_idx])
-            if extracted_child:
-                valid_children.append(extracted_child)
+        if item.children:
+            for child_id in item.children:
+                child_idx = item_to_index.get(child_id)
+                if child_id in vis_items:
+                    continue
+                vis_items.add(child_id)
+                extracted_child = _extract_term(items[child_idx])
+                if extracted_child:
+                    valid_children.append(extracted_child)
 
         term["children"] = valid_children
         return term
@@ -337,6 +368,7 @@ def get_toc_from_items(items: List[Item]) -> List[Dict[str, Any]]:
         term = _extract_term(item)
         if term:
             ToC.append(term)
+
     return ToC
 
 
@@ -372,7 +404,7 @@ def build_rich_toc(items: List[Item], file: File) -> Dict[str, Any]:
             }
         )
 
-        for child in node.get("children") or []:
+        for child in node.get("children", []):
             visit(child, level + 1)
 
     for root in tree:
