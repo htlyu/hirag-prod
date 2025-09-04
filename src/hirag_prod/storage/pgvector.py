@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from hirag_prod._utils import AsyncEmbeddingFunction
 from hirag_prod.reranker.utils import apply_reranking
 from hirag_prod.resources.functions import get_db_engine, get_db_session_maker
-from hirag_prod.schema import Chunk, File, Triplets
+from hirag_prod.schema import Chunk, File, Item, Triplets
 from hirag_prod.schema.base import Base as PGBase
 from hirag_prod.storage.base_vdb import BaseVDB
 from hirag_prod.storage.retrieval_strategy_provider import RetrievalStrategyProvider
@@ -48,6 +48,7 @@ class PGVector(BaseVDB):
             "Chunks": Chunk,
             "Files": File,
             "Triplets": Triplets,
+            "Items": Item,
         }  # mapping of table names to model creation functions
 
     def _to_list(self, embedding):
@@ -340,11 +341,17 @@ class PGVector(BaseVDB):
             Chunks = self.get_model("Chunks")
             Files = self.get_model("Files")
             Triplets = self.get_model("Triplets")
+            Items = self.get_model("Items")
 
             def _create(sync_conn):
                 PGBase.metadata.create_all(
                     bind=sync_conn,
-                    tables=[Chunks.__table__, Files.__table__, Triplets.__table__],
+                    tables=[
+                        Chunks.__table__,
+                        Files.__table__,
+                        Triplets.__table__,
+                        Items.__table__,
+                    ],
                 )
 
             await conn.run_sync(_create)
