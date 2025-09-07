@@ -1,8 +1,11 @@
 # This is a quickstart script for the HiRAG system.
+import argparse
 import asyncio
 import logging
+import sys
 
 from hirag_prod import HiRAG
+from hirag_prod.configs.cli_options import CliOptions
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,14 +72,26 @@ def get_test(id: str):
         }
         query = "What is the cause of Odisha train accident in 2023?"
         return document_path, content_type, document_meta, query
+    else:
+        # Default to small.pdf if test not found
+        document_path = f"s3://monkeyocr/test/input/test_pdf/small.pdf"
+        content_type = "application/pdf"
+        document_meta = {
+            "type": "pdf",
+            "fileName": "small.pdf",
+            "uri": document_path,
+            "private": False,
+        }
+        query = "Machine learning in detection"
+        return document_path, content_type, document_meta, query
 
 
-async def index():
+async def index(test_id="2"):
     index = await HiRAG.create()
 
     await index.set_language("en")  # en | cn
 
-    document_path, content_type, document_meta, query = get_test("5")
+    document_path, content_type, document_meta, query = get_test(test_id)
 
     await index.insert_to_kb(
         document_path=document_path,
@@ -101,5 +116,21 @@ async def index():
     print(ret["summary"])
 
 
+def main():
+    # Use the integrated CLI options instead of a separate argument parser
+    cli_options = CliOptions()
+
+    # Print available tests for user reference
+    print("Available tests:")
+    print("  1 / wiki_subcorpus - 2wiki subcorpus text file")
+    print("  2 / s3: small_pdf - Small PDF from S3 (default)")
+    print("  3 / oss: U.S.Health - U.S. Healthcare guide PDF")
+    print("  4 / md-itinerary - Holiday itinerary markdown")
+    print("  5 / md-wiki - Wikipedia article markdown")
+    print(f"\nRunning test: {cli_options.test}\n")
+
+    asyncio.run(index(cli_options.test))
+
+
 if __name__ == "__main__":
-    asyncio.run(index())
+    main()

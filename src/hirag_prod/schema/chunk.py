@@ -8,7 +8,6 @@ from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.types import ARRAY
 
 from hirag_prod.schema.base import Base
-from hirag_prod.schema.file import File
 
 # read halfvec and dim from env
 dotenv.load_dotenv()
@@ -51,23 +50,3 @@ class Chunk(Base):
     def __iter__(self):
         for column in self.__table__.columns:
             yield column.name, getattr(self, column.name)
-
-
-def file_to_chunk(
-    file: File, documentKey: str, text: str, documentId: str, chunkIdx
-) -> Chunk:
-    return Chunk(
-        # Given
-        documentKey=documentKey,
-        text=text,
-        documentId=documentId,
-        chunkIdx=chunkIdx,
-        # Copy
-        fileName=file.fileName,
-        uri=file.uri,
-        private=file.private,
-        knowledgeBaseId=file.knowledgeBaseId,
-        workspaceId=file.workspaceId,
-        type=file.type,
-        pageNumber=file.pageNumber,
-    )
