@@ -31,24 +31,34 @@ from hirag_prod.configs.functions import (
     initialize_config_manager,
 )
 from hirag_prod.entity import BaseKG, VanillaKG
-from hirag_prod.exceptions import (DocumentProcessingError, HiRAGException,
-                                   KGConstructionError)
+from hirag_prod.exceptions import (
+    DocumentProcessingError,
+    HiRAGException,
+    KGConstructionError,
+)
 from hirag_prod.loader import load_document
-from hirag_prod.loader.chunk_split import (build_rich_toc,
-                                           chunk_docling_document,
-                                           chunk_dots_document,
-                                           chunk_dots_document_recursive,
-                                           chunk_langchain_document,
-                                           group_docling_items_by_header,
-                                           obtain_docling_md_bbox)
+from hirag_prod.loader.chunk_split import (
+    build_rich_toc,
+    chunk_docling_document,
+    chunk_dots_document,
+    chunk_dots_document_recursive,
+    chunk_langchain_document,
+    group_docling_items_by_header,
+    obtain_docling_md_bbox,
+)
 from hirag_prod.metrics import MetricsCollector, ProcessingMetrics
 from hirag_prod.parser import DictParser, ReferenceParser
 from hirag_prod.prompt import PROMPTS
 from hirag_prod.resources.functions import initialize_resource_manager
 from hirag_prod.resume_tracker import JobStatus, ResumeTracker
 from hirag_prod.schema import Chunk, File, Item, LoaderType, item_to_chunk
-from hirag_prod.storage import (BaseGDB, BaseVDB, LanceDB, NetworkXGDB,
-                                RetrievalStrategyProvider)
+from hirag_prod.storage import (
+    BaseGDB,
+    BaseVDB,
+    LanceDB,
+    NetworkXGDB,
+    RetrievalStrategyProvider,
+)
 from hirag_prod.storage.pgvector import PGVector
 from hirag_prod.storage.query_service import QueryService
 from hirag_prod.storage.storage_manager import StorageManager
@@ -287,11 +297,11 @@ class DocumentProcessor:
                     # Validate instance, as it may fall back to docling if cloud service unavailable
                     if isinstance(json_doc, list):
                         # Chunk the Dots OCR document
-                        items = chunk_dots_document(
+                        items, header_set = chunk_dots_document(
                             json_doc=json_doc, md_doc=generated_md
                         )
                         chunks = chunk_dots_document_recursive(
-                            json_doc=json_doc, md_doc=generated_md, items=items
+                            items=items, header_set=header_set
                         )
                         if generated_md:
                             generated_md.tableOfContents = build_rich_toc(
@@ -590,8 +600,9 @@ class HiRAG:
         self, sentence_embedding: List[float], references: Dict[str, List[float]]
     ) -> List[Dict[str, float]]:
         """Calculate similarity between sentence embedding and reference embeddings"""
-        from sklearn.metrics.pairwise import \
-            cosine_similarity as sklearn_cosine_similarity
+        from sklearn.metrics.pairwise import (
+            cosine_similarity as sklearn_cosine_similarity,
+        )
 
         similar_refs = []
         for entity_key, embedding in references.items():
