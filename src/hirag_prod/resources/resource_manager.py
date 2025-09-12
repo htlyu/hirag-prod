@@ -2,16 +2,27 @@ import asyncio
 import logging
 import os
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import nltk
+from googletrans import Translator
 from redis.asyncio import ConnectionPool, Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from hirag_prod._llm import (
+    ChatCompletion,
+    EmbeddingService,
+    LocalChatService,
+    LocalEmbeddingService,
+    create_chat_service,
+    create_embedding_service,
+)
 from hirag_prod._utils import log_error_info
 from hirag_prod.configs.functions import (
     get_config_manager,
     get_envs,
+    get_hi_rag_config,
 )
 from hirag_prod.resources.functions import timing_logger
 
@@ -45,6 +56,17 @@ class ResourceManager:
         # Redis resources
         self._redis_pool: Optional[ConnectionPool] = (
             resource_dict.get("redis_pool", None) if resource_dict else None
+        )
+
+        # Services
+        self._chat_service: Optional[Union[ChatCompletion, LocalChatService]] = None
+        self._embedding_service: Optional[
+            Union[EmbeddingService, LocalEmbeddingService]
+        ] = None
+
+        # Translator
+        self._translator: Optional[Translator] = (
+            resource_dict.get("translator", None) if resource_dict else None
         )
 
         # Cleanup operation list
@@ -88,6 +110,9 @@ class ResourceManager:
             logging.info(f"🔄 Initializing ResourceManager...")
 
             try:
+                # Download nltk data
+                nltk.download("wordnet")
+
                 # Initialize database engine with connection pool
                 if (not self._db_engine) or (not self._session_maker):
                     await self._initialize_database()
@@ -95,6 +120,18 @@ class ResourceManager:
                 # Initialize Redis connection pool
                 if not self._redis_pool:
                     await self._initialize_redis()
+
+                # Initialize services
+                if not self._chat_service:
+                    self._chat_service = create_chat_service()
+                if not self._embedding_service:
+                    self._embedding_service = create_embedding_service(
+                        default_batch_size=get_hi_rag_config().embedding_batch_size
+                    )
+
+                # Initialize Translator
+                if not self._translator:
+                    self._translator = Translator()
 
                 # Reverse the cleanup operation list to ensure proper cleanup
                 self._cleanup_operation_list.reverse()
@@ -217,6 +254,26 @@ class ResourceManager:
         if self._redis_pool is None:
             raise RuntimeError("Redis not initialized. Call initialize() first.")
         return Redis(connection_pool=self._redis_pool, **kwargs)
+
+    def get_chat_service(self) -> Union[ChatCompletion, LocalChatService]:
+        """Get the chat service instance."""
+        if self._chat_service is None:
+            raise RuntimeError("Chat service not initialized. Call initialize() first.")
+        return self._chat_service
+
+    def get_embedding_service(self) -> Union[EmbeddingService, LocalEmbeddingService]:
+        """Get the embedding service instance."""
+        if self._embedding_service is None:
+            raise RuntimeError(
+                "Embedding service not initialized. Call initialize() first."
+            )
+        return self._embedding_service
+
+    def get_translator(self) -> Translator:
+        """Get the translator instance."""
+        if self._translator is None:
+            raise RuntimeError("Translator not initialized. Call initialize() first.")
+        return self._translator
 
     async def cleanup(self, ensure_init_lock: bool = True) -> None:
         try:
