@@ -3,11 +3,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
 from docling_core.types.doc import DoclingDocument
-from dotenv import load_dotenv
 
 from hirag_prod._utils import (
     compute_mdhash_id,
@@ -42,6 +41,7 @@ from hirag_prod.prompt import PROMPTS
 from hirag_prod.resources.functions import (
     get_chat_service,
     get_embedding_service,
+    get_translator,
     initialize_resource_manager,
 )
 from hirag_prod.resume_tracker import JobStatus, ResumeTracker
@@ -56,8 +56,6 @@ from hirag_prod.storage import (
 from hirag_prod.storage.pgvector import PGVector
 from hirag_prod.storage.query_service import QueryService
 from hirag_prod.storage.storage_manager import StorageManager
-
-load_dotenv("/chatbot/.env")
 
 # Configure Logging
 logging.basicConfig(
@@ -682,7 +680,6 @@ class HiRAG:
         chunks: List[Dict[str, Any]],
     ) -> str:
         """Generate summary from chunks"""
-        DEBUG = False  # Set to True for debugging output
 
         logger.info("🚀 Starting summary generation")
         start_time = time.perf_counter()
@@ -725,16 +722,10 @@ class HiRAG:
                     new_error_class=HiRAGException,
                 )
 
-            if DEBUG:
-                print("\n\n\nGenerated Summary:\n", summary)
-
             # Find all sentences that contain the placeholder
             ref_parser = ReferenceParser()
 
             ref_sentences = await ref_parser.parse_references(summary, placeholder)
-
-            if DEBUG:
-                print("\n\n\nReference Sentences:\n", "\n".join(ref_sentences))
 
             # for each sentence, do a query and find the best matching document key to find the referenced chunk
             result = []
@@ -782,14 +773,6 @@ class HiRAG:
                     sentence_embedding, chunk_embeddings
                 )
 
-                if DEBUG:
-                    print(
-                        "\n\n\nSimilar Chunks for Sentence:",
-                        sentence,
-                        "\n",
-                        similar_chunks,
-                    )
-
                 # Sort by similarity
                 reference_list = similar_chunks
                 reference_list.sort(key=lambda x: x["similarity"], reverse=True)
@@ -834,15 +817,6 @@ class HiRAG:
                     key=lambda x: (x["documentKey"].split("_")[0], -x["similarity"])
                 )
 
-                # Append the document keys to the result
-                if DEBUG:
-                    print(
-                        "\n\n\nFiltered References for Sentence:",
-                        sentence,
-                        "\n",
-                        filtered_references,
-                    )
-
                 if len(filtered_references) == 1:
                     result.append([filtered_references[0]["documentKey"]])
                 else:
@@ -858,9 +832,6 @@ class HiRAG:
                 reference_placeholder=placeholder,
                 format_prompt=format_prompt,
             )
-
-            if DEBUG:
-                print("\n\n\nFormatted Summary:\n", summary)
 
             total_time = time.perf_counter() - start_time
             logger.info(f"✅ Summary generation completed in {total_time:.3f}s")
@@ -1040,7 +1011,9 @@ class HiRAG:
         workspace_id: str,
         knowledge_base_id: str,
         summary: bool = False,
-        threshold: float = 0.001,
+        threshold: float = 0.0,
+        translation: Optional[List[str]] = None,
+        strategy: Literal["pagerank", "reranker"] = "pagerank",
     ) -> Dict[str, Any]:
         """Query all types of data"""
         if not self._query_service:
@@ -1049,33 +1022,57 @@ class HiRAG:
             raise HiRAGException("Workspace ID (workspace_id) is required")
         if not knowledge_base_id:
             raise HiRAGException("Knowledge base ID (knowledge_base_id) is required")
+
+        original_query = query
+        query_list = [original_query]
+
+        if translation:
+            # Get translator from resource manager
+            translator = get_translator()
+
+            # Translate to each specified language
+            for target_language in translation:
+                try:
+                    # Following the same pattern as cross_language_search
+                    translated_result = await translator.translate(
+                        original_query, dest=target_language
+                    )
+                    if (
+                        translated_result.text
+                        and translated_result.text != original_query
+                    ):
+                        query_list.append(translated_result.text)
+                        logger.info(
+                            f"🌐 Translated query to {target_language}: {translated_result.text}"
+                        )
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to translate to {target_language}: {e}")
+
+        query_results = await self._query_service.query(
+            query=query_list if len(query_list) > 1 else original_query,
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            strategy=strategy,
+        )
+
         if summary:
-            query_results = await self._query_service.query(
-                query=query,
-                workspace_id=workspace_id,
-                knowledge_base_id=knowledge_base_id,
-            )
             text_summary = await self.generate_summary(
                 workspace_id=workspace_id,
                 knowledge_base_id=knowledge_base_id,
-                query=query,
+                query=original_query,
                 chunks=query_results["chunks"],
             )
             query_results["summary"] = text_summary
-        else:
-            query_results = await self._query_service.query(
-                query=query,
-                workspace_id=workspace_id,
-                knowledge_base_id=knowledge_base_id,
-            )
+
         # Filter chunks by threshold on relevance score
         if threshold > 0.0 and query_results.get("chunks"):
             filtered_chunks = [
                 chunk
                 for chunk in query_results["chunks"]
-                if chunk.get("pagerank_score", 0.0) >= threshold
+                if chunk.get("relevance_score", 0.0) >= threshold
             ]
             query_results["chunks"] = filtered_chunks
+
         return query_results
 
     async def get_health_status(self) -> Dict[str, Any]:
