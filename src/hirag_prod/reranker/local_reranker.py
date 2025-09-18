@@ -73,19 +73,21 @@ class LocalReranker(Reranker):
             return result.get("results", [])
 
     async def rerank(
-        self, query: Union[str, List[str]], items: List[Dict], topn: int
+        self,
+        query: Union[str, List[str]],
+        items: List[Dict],
+        key: str = "text",
     ) -> List[Dict]:
-        if not items or topn <= 0:
+        if not items:
             return []
 
-        topn = min(topn, len(items))
-        docs = [item.get("text", "") for item in items]
+        docs = [item.get(key, "") for item in items]
 
         # Handle single query case
         if isinstance(query, str):
             results = await self._call_api(query, docs)
             reranked = []
-            for r in results[:topn]:
+            for r in results:
                 idx = r.get("index")
                 if idx is not None and 0 <= idx < len(items):
                     item = items[idx].copy()
@@ -115,6 +117,6 @@ class LocalReranker(Reranker):
                 item["relevance_score"] = score
                 reranked.append(item)
 
-            # Sort by score descending and return top n
+            # Sort by score descending and return
             reranked.sort(key=lambda x: x["relevance_score"], reverse=True)
-            return reranked[:topn]
+            return reranked

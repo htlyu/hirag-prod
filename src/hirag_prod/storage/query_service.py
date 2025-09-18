@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from hirag_prod._utils import log_error_info
 from hirag_prod.configs.functions import get_hi_rag_config
-from hirag_prod.reranker import Reranker, create_reranker
+from hirag_prod.reranker.utils import apply_reranking
 from hirag_prod.storage.storage_manager import StorageManager
 
 logger = logging.getLogger("HiRAG")
@@ -15,7 +15,6 @@ class QueryService:
 
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self.reranker: Optional[Reranker] = create_reranker()
 
     async def query_chunks(self, *args, **kwargs) -> List[Dict[str, Any]]:
         """Query chunks via unified storage"""
@@ -287,7 +286,7 @@ class QueryService:
         topk = topk or get_hi_rag_config().default_query_top_k
         topn = topn or get_hi_rag_config().default_query_top_n
 
-        # Path 1: chunk recall (rerank happens in VDB query)
+        # Path 1: chunk recall
         chunk_recall = await self.recall_chunks(
             query,
             topk=topk,
@@ -298,11 +297,12 @@ class QueryService:
         query_chunks = chunk_recall["chunks"]
 
         # rerank
-        if self.reranker and query_chunks:
+        if query_chunks:
             try:
-                reranked_chunks = await self.reranker.rerank(
+                reranked_chunks = await apply_reranking(
                     query=query,
-                    items=query_chunks,
+                    results=query_chunks,
+                    topk=topk,
                     topn=topn,
                 )
                 query_chunks = reranked_chunks
@@ -318,11 +318,15 @@ class QueryService:
         workspace_id: str,
         knowledge_base_id: str,
         query: Union[str, List[str]],
-        strategy: Literal["pagerank", "reranker"] = "reranker",
+        strategy: Literal["pagerank", "reranker", "hybrid"] = "hybrid",
+        topk: Optional[int] = None,
+        topn: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Query Strategy"""
         if strategy == "reranker":
             result = await self.dual_recall_with_rerank(
+                topk=topk,
+                topn=topn,
                 query=query,
                 workspace_id=workspace_id,
                 knowledge_base_id=knowledge_base_id,
@@ -331,6 +335,8 @@ class QueryService:
             return result
         elif strategy == "pagerank":
             result = await self.dual_recall_with_pagerank(
+                topk=topk,
+                topn=topn,
                 query=query,
                 workspace_id=workspace_id,
                 knowledge_base_id=knowledge_base_id,
@@ -341,5 +347,44 @@ class QueryService:
                 else result.get("query_top", [])
             )
             return result
+        elif strategy == "hybrid":
+            # First get pagerank results
+            pagerank_result = await self.dual_recall_with_pagerank(
+                topk=topk,
+                topn=topn,
+                query=query,
+                workspace_id=workspace_id,
+                knowledge_base_id=knowledge_base_id,
+            )
+
+            # Use pagerank results if available, otherwise fall back to query_top
+            chunks_to_rerank = (
+                pagerank_result.get("pagerank")
+                if pagerank_result.get("pagerank")
+                else pagerank_result.get("query_top", [])
+            )
+
+            # Apply reranking to the pagerank results
+            if chunks_to_rerank:
+                try:
+                    topk = topk or get_hi_rag_config().default_query_top_k
+                    topn = topn or get_hi_rag_config().default_query_top_n
+                    reranked_chunks = await apply_reranking(
+                        query=query,
+                        results=chunks_to_rerank,
+                        topk=topk,
+                        topn=topn,
+                    )
+                    chunks_to_rerank = reranked_chunks
+                except Exception as e:
+                    log_error_info(
+                        logging.ERROR, "Failed to rerank chunks in hybrid strategy", e
+                    )
+
+            return {
+                "chunks": chunks_to_rerank,
+                "pagerank": pagerank_result.get("pagerank", []),
+                "query_top": pagerank_result.get("query_top", []),
+            }
         else:
             raise ValueError(f"Unknown query strategy: {strategy}")
