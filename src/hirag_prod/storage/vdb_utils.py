@@ -14,6 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 console = Console()
 
+
 async def get_chunk_info(
     chunk_ids: list[str],
     knowledge_base_id: Optional[str] = None,
@@ -99,6 +100,7 @@ async def get_file_info(
             return []
     else:
         raise NotImplementedError("This VDB type is not supported yet")
+
 
 async def get_table_info_by_scope(
     table_name: str,
