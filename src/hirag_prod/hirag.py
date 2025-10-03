@@ -334,7 +334,7 @@ class DocumentProcessor:
             except Exception as e:
                 log_error_info(
                     logging.ERROR,
-                    f"Failed to loading document {document_path}",
+                    f"Failed to load document {document_path}",
                     e,
                     raise_error=True,
                     new_error_class=DocumentProcessingError,
