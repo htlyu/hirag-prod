@@ -3,7 +3,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 from docling_core.types.doc import DoclingDocument
@@ -202,7 +202,7 @@ class DocumentProcessor:
         document_meta: Optional[Dict],
         loader_configs: Optional[Dict],
         loader_type: Optional[LoaderType],
-    ) -> (List[Chunk], File):  # type: ignore
+    ) -> Tuple[List[Chunk], File, List[Item]]:
         """Load and chunk document"""
         async with self.metrics.track_operation("load_and_chunk"):
             generated_md = None
@@ -1066,6 +1066,7 @@ class HiRAG:
         translation: Optional[List[str]] = None,
         translator: Literal["google", "qwen"] = "qwen",
         strategy: Literal["pagerank", "reranker", "hybrid"] = "hybrid",
+        filter_by_clustering: bool = True,
     ) -> Dict[str, Any]:
         """Query all types of data"""
         if not self._query_service:
@@ -1111,6 +1112,7 @@ class HiRAG:
             workspace_id=workspace_id,
             knowledge_base_id=knowledge_base_id,
             strategy=strategy,
+            filter_by_clustering=filter_by_clustering,
         )
 
         # Filter chunks by threshold on relevance score

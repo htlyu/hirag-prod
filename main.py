@@ -278,7 +278,7 @@ def print_chunks_user_friendly(chunks):
         print()
 
 
-async def index(test_id="2", overwrite=True, summary=True, save_json=False):
+async def index(test_id="2", summary=True, save_json=False):
     index = await HiRAG.create()
 
     await index.set_language("en")  # en | cn
@@ -338,14 +338,12 @@ def main():
 
     # Print available tests for user reference
     print(f"\nRunning test: {cli_options.test}")
-    print(f"Overwrite: {cli_options.overwrite}")
-    print(f"Summary: {cli_options.summary}")
+    print(f"Summary: {cli_options.summary}\n")
     print(f"Save JSON: {cli_options.save_json}\n")
 
     asyncio.run(
         index(
             cli_options.test,
-            cli_options.overwrite,
             cli_options.summary,
             cli_options.save_json,
         )
