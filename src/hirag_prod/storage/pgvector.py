@@ -23,7 +23,6 @@ from hirag_prod.schema import Chunk, Entity, File, Graph, Item, Node, Relation, 
 from hirag_prod.schema.graph import create_graph
 from hirag_prod.schema.node import create_node
 from hirag_prod.storage.base_vdb import BaseVDB
-from hirag_prod.storage.retrieval_strategy_provider import RetrievalStrategyProvider
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,6 @@ class PGVector(BaseVDB):
 
     Attributes:
         embedding_func (Optional[AsyncEmbeddingFunction]): Function to generate text embeddings.
-        strategy_provider (RetrievalStrategyProvider): Handles result ranking.
         vector_type (str): Type of vector storage ('vector' or 'halfvec').
         tables (dict): Mapping of table names to model classes.
     """
@@ -49,11 +47,9 @@ class PGVector(BaseVDB):
     def __init__(
         self,
         embedding_func: Optional[AsyncEmbeddingFunction],
-        strategy_provider: "RetrievalStrategyProvider",
         vector_type: Literal["vector", "halfvec"] = "halfvec",
     ):
         self.embedding_func = embedding_func
-        self.strategy_provider = strategy_provider
         self.vector_type = vector_type
         self.tables = {
             "Chunks": Chunk,
@@ -79,10 +75,9 @@ class PGVector(BaseVDB):
     def create(
         cls,
         embedding_func: Optional[AsyncEmbeddingFunction],
-        strategy_provider: "RetrievalStrategyProvider",
         vector_type: Literal["vector", "halfvec"] = "halfvec",
     ):
-        instance = cls(embedding_func, strategy_provider, vector_type=vector_type)
+        instance = cls(embedding_func, vector_type=vector_type)
         return instance
 
     # batch upserts text embeddings into the specified table
@@ -540,11 +535,6 @@ class PGVector(BaseVDB):
     ) -> List[dict]:
         if isinstance(query, str):
             query = [query]
-
-        if topk is None:
-            topk = self.strategy_provider.default_topk
-        if topn is None:
-            topn = self.strategy_provider.default_topn
 
         if topn > topk:
             raise ValueError(f"topn ({topn}) must be <= topk ({topk})")

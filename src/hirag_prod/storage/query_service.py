@@ -117,7 +117,7 @@ class QueryService:
         # Print cluster info
         logger.info(f"Clustering result: {cluster_info}")
         if not clusters:
-            return chunks
+            return chunks, []
 
         # Id to chunk map
         id_to_chunk = {
