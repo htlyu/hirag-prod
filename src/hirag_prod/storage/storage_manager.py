@@ -16,7 +16,6 @@ from hirag_prod.schema import (
 from hirag_prod.storage import (
     BaseGDB,
     BaseVDB,
-    LanceDB,
 )
 from hirag_prod.storage.pgvector import PGVector
 
@@ -227,9 +226,7 @@ class StorageManager:
     async def health_check(self) -> Dict[str, bool]:
         health: Dict[str, bool] = {}
         try:
-            if isinstance(self.vdb, LanceDB):
-                await self.vdb.db.table_names()
-            elif isinstance(self.vdb, PGVector):
+            if isinstance(self.vdb, PGVector):
                 async with get_resource_manager().get_session_maker()() as s:
                     await s.execute(select(1))
             health["vdb"] = True

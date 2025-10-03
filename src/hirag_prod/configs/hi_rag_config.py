@@ -14,7 +14,7 @@ class HiRAGConfig(BaseSettings):
     # Database configuration
     vector_db_path: str = "kb/hirag.db"
     graph_db_path: str = "kb/hirag.gpickle"
-    vdb_type: Literal["lancedb", "pgvector"] = "pgvector"
+    vdb_type: Literal["pgvector"] = "pgvector"
     gdb_type: Literal["networkx"] = "networkx"
     clustering_n_clusters: int = 8  # Set to None if not using fixed number of clusters
     clustering_distance_threshold: float = (

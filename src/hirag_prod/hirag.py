@@ -52,9 +52,7 @@ from hirag_prod.schema import Chunk, File, Item, LoaderType, item_to_chunk
 from hirag_prod.storage import (
     BaseGDB,
     BaseVDB,
-    LanceDB,
     NetworkXGDB,
-    RetrievalStrategyProvider,
 )
 from hirag_prod.storage.pgvector import PGVector
 from hirag_prod.storage.query_service import QueryService
@@ -495,16 +493,9 @@ class HiRAG:
     ) -> None:
         # Build VDB by type
         if vdb is None:
-            if get_hi_rag_config().vdb_type == "lancedb":
-                vdb = await LanceDB.create(
-                    embedding_func=get_embedding_service().create_embeddings,
-                    db_url=get_hi_rag_config().vector_db_path,
-                    strategy_provider=RetrievalStrategyProvider(),
-                )
-            elif get_hi_rag_config().vdb_type == "pgvector":
+            if get_hi_rag_config().vdb_type == "pgvector":
                 vdb = PGVector.create(
                     embedding_func=get_embedding_service().create_embeddings,
-                    strategy_provider=RetrievalStrategyProvider(),
                     vector_type="halfvec",
                 )
 
