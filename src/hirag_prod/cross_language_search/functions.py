@@ -248,12 +248,12 @@ def find_sentence_matches(
     while len(queue) > 0:
         text, start_index = queue.pop(0)
         for search in search_list:
-            if fuzz.ratio(text, search) > 80:
+            if fuzz.ratio(text, search) > 90:
                 fuzzy_match_list.append((start_index, start_index + len(text)))
                 break
             elif len(text) >= len(search):
                 match_result: Optional[ScoreAlignment] = fuzz.partial_ratio_alignment(
-                    text, search, score_cutoff=80
+                    text, search, score_cutoff=90
                 )
                 if match_result is not None:
                     fuzzy_match_list.append(
@@ -297,9 +297,11 @@ async def precise_search_by_search_sentence_list(
         )
         if len(search_list) > 0:
             if fuzzy_match_list_dict_batch[i]["original"] is not None:
-                fuzzy_match_list_dict_batch[i]["original"] += find_sentence_matches(
+                search_result: Optional[List[Tuple[int, int]]] = find_sentence_matches(
                     processed_chunk["original_normalized"], search_list
                 )
+                if search_result is not None:
+                    fuzzy_match_list_dict_batch[i]["original"] += search_result
             else:
                 fuzzy_match_list_dict_batch[i]["translation"] = find_sentence_matches(
                     processed_chunk["translation_normalized"], search_list
